@@ -1,0 +1,28 @@
+FROM golang:1.25-alpine AS builder
+WORKDIR /build
+
+RUN apk add --no-cache ca-certificates git
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY src ./src
+RUN go build -o /out/pocketbase ./src
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata && \
+    adduser -D -H -u 10001 pocketbase
+ENV TZ=Asia/Seoul
+WORKDIR /pb
+
+RUN mkdir -p /pb/pb_data /pb/pb_public /pb/pb_migrations && \
+    chown -R pocketbase /pb
+
+COPY --from=builder /out/pocketbase /usr/local/bin/pocketbase
+
+VOLUME ["/pb/pb_data"]
+
+EXPOSE 8090
+USER pocketbase
+
+CMD ["pocketbase", "serve", "--http", "0.0.0.0:8090", "--dir", "/pb/pb_data"]
