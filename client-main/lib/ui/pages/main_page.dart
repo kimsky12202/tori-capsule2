@@ -15,9 +15,9 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
   int _currentIndex = 1;
 
   static const _pages = [
-    ProfilePage(),
-    MapScreen(),
     QuestPage(),
+    MapScreen(),
+    ProfilePage(),
   ];
 
   @override
@@ -55,13 +55,13 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
             BottomNavigationBarItem(
               icon: Padding(
                 padding: EdgeInsets.only(bottom: 2),
-                child: Icon(Icons.person_outline, size: 24),
+                child: Icon(Icons.emoji_events_outlined, size: 24),
               ),
               activeIcon: Padding(
                 padding: EdgeInsets.only(bottom: 2),
-                child: Icon(Icons.person, size: 24),
+                child: Icon(Icons.emoji_events, size: 24),
               ),
-              label: '내정보',
+              label: '퀘스트',
             ),
             BottomNavigationBarItem(
               icon: Padding(
@@ -77,13 +77,13 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
             BottomNavigationBarItem(
               icon: Padding(
                 padding: EdgeInsets.only(bottom: 2),
-                child: Icon(Icons.emoji_events_outlined, size: 24),
+                child: Icon(Icons.person_outline, size: 24),
               ),
               activeIcon: Padding(
                 padding: EdgeInsets.only(bottom: 2),
-                child: Icon(Icons.emoji_events, size: 24),
+                child: Icon(Icons.person, size: 24),
               ),
-              label: '퀘스트',
+              label: '내정보',
             ),
           ],
         ),
