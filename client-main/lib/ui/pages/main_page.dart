@@ -11,11 +11,12 @@ class MainNavigationPage extends StatefulWidget {
 }
 
 class _MainNavigationPageState extends State<MainNavigationPage> {
-  int _currentIndex = 0;
+  // 가운데(index 1)가 지도
+  int _currentIndex = 1;
 
   static const _pages = [
-    MapScreen(),
     ProfilePage(),
+    MapScreen(),
     QuestPage(),
   ];
 
@@ -54,17 +55,6 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
             BottomNavigationBarItem(
               icon: Padding(
                 padding: EdgeInsets.only(bottom: 2),
-                child: Icon(Icons.map_outlined, size: 24),
-              ),
-              activeIcon: Padding(
-                padding: EdgeInsets.only(bottom: 2),
-                child: Icon(Icons.map, size: 24),
-              ),
-              label: '지도',
-            ),
-            BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 2),
                 child: Icon(Icons.person_outline, size: 24),
               ),
               activeIcon: Padding(
@@ -72,6 +62,17 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
                 child: Icon(Icons.person, size: 24),
               ),
               label: '내정보',
+            ),
+            BottomNavigationBarItem(
+              icon: Padding(
+                padding: EdgeInsets.only(bottom: 2),
+                child: Icon(Icons.map_outlined, size: 24),
+              ),
+              activeIcon: Padding(
+                padding: EdgeInsets.only(bottom: 2),
+                child: Icon(Icons.map, size: 24),
+              ),
+              label: '지도',
             ),
             BottomNavigationBarItem(
               icon: Padding(
