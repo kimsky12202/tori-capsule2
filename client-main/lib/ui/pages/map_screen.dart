@@ -513,6 +513,42 @@ class MapScreenState extends State<MapScreen>
     _registerTapListener();
   }
 
+  // ── 3D 지형 설정 ─────────────────────────────────────────
+  Future<void> _initTerrain() async {
+    if (_map == null) return;
+    try {
+      final demExists = await _map!.style.styleSourceExists('mapbox-dem');
+      if (!demExists) {
+        await _map!.style.addSource(
+          RasterDemSource(
+            id: 'mapbox-dem',
+            url: 'mapbox://mapbox.mapbox-terrain-dem-v1',
+            tileSize: 512,
+            maxzoom: 14.0,
+          ),
+        );
+      }
+      // 지형 고도 활성화 (1.5배 과장으로 한국 산악 지형 강조)
+      await _map!.style.setStyleTerrain(
+        jsonEncode({'source': 'mapbox-dem', 'exaggeration': 1.5}),
+      );
+      // 대기권(하늘) 레이어 추가 — 입체감 강화
+      final skyExists = await _map!.style.styleLayerExists('sky-3d');
+      if (!skyExists) {
+        await _map!.style.addLayer(
+          SkyLayer(
+            id: 'sky-3d',
+            skyType: SkyType.ATMOSPHERE,
+            skyAtmosphereSun: [0.0, 90.0],
+            skyAtmosphereSunIntensity: 15.0,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('지형 초기화 오류: $e');
+    }
+  }
+
   // ── 지도 초기화 ───────────────────────────────────────────
   Future<void> _onMapCreated(MapboxMap map) async {
     _map = map;
@@ -521,6 +557,7 @@ class MapScreenState extends State<MapScreen>
         rotateEnabled: true,
         pinchToZoomEnabled: true,
         scrollEnabled: true,
+        pitchEnabled: true,
         doubleTapToZoomInEnabled: true,
         doubleTouchToZoomOutEnabled: true,
         quickZoomEnabled: true,
@@ -535,6 +572,7 @@ class MapScreenState extends State<MapScreen>
   Future<void> _onStyleLoaded(StyleLoadedEventData _) async {
     await _initOverlayLayer();
     await _updateOverlay();
+    await _initTerrain();
   }
 
   Future<void> _moveToMyLocation() async {
@@ -552,8 +590,10 @@ class MapScreenState extends State<MapScreen>
         CameraOptions(
           center: Point(coordinates: Position(pos.longitude, pos.latitude)),
           zoom: 14.0,
+          pitch: 50.0,
+          bearing: 0.0,
         ),
-        MapAnimationOptions(duration: 1000),
+        MapAnimationOptions(duration: 1200),
       );
       await _updateMyDot(pos.latitude, pos.longitude);
     } catch (e) {
@@ -897,8 +937,10 @@ class MapScreenState extends State<MapScreen>
             key: const ValueKey('capsule_map'),
             styleUri: MapboxStyles.STANDARD,
             cameraOptions: CameraOptions(
-              center: Point(coordinates: Position(127.2890, 36.4800)),
-              zoom: 6.0,
+              center: Point(coordinates: Position(127.9785, 37.5665)),
+              zoom: 7.0,
+              pitch: 45.0,
+              bearing: 0.0,
             ),
             onMapCreated: _onMapCreated,
             onStyleLoadedListener: _onStyleLoaded,
