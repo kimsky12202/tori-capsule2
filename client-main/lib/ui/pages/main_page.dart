@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'map_screen.dart';
+import 'unity_map_screen.dart';
 import 'profile_page.dart';
 import 'quest_page.dart';
 
@@ -16,7 +16,7 @@ class _MainNavigationPageState extends State<MainNavigationPage> {
 
   static const _pages = [
     QuestPage(),
-    MapScreen(),
+    UnityMapScreen(),
     ProfilePage(),
   ];
 
