@@ -935,7 +935,7 @@ class MapScreenState extends State<MapScreen>
         children: [
           MapWidget(
             key: const ValueKey('capsule_map'),
-            styleUri: MapboxStyles.STANDARD,
+            styleUri: 'mapbox://styles/mapbox/dark-v11',
             cameraOptions: CameraOptions(
               center: Point(coordinates: Position(127.2890, 36.4800)),
               zoom: 6.0,
