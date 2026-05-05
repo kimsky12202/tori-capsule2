@@ -68,7 +68,7 @@ class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
   static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
-  static const String _polygonsKey = 'capsule_polygons_v7';
+  static const String _polygonsKey = 'capsule_polygons_v8';
 
   MapboxMap? _map;
   PointAnnotationManager? _pinManager;
@@ -106,51 +106,70 @@ class MapScreenState extends State<MapScreen>
   // 우선순위: 대학/병원/학교 캠퍼스 > 아파트 단지 > 도로 기준 > 단일 건물
   Future<List<List<List<double>>>> _queryStreetBuildings(
       double lat, double lng) async {
-    // 1단계: 대학, 병원, 학교, 아파트 단지 등 논리적 구역 안에 있는지 확인
-    //   is_in은 area 객체를 반환 → area.a[tag] 로 바로 필터해야 함
+    // 1단계: 위치가 포함된 캠퍼스/단지 area 찾아서 그 안의 건물 전부
+    //   is_in → area.a 필터 (name 없어도 통과시킴)
     final campusQuery = '''
 [out:json];
 is_in($lat,$lng)->.a;
 (
-  area.a["amenity"~"university|college|school|hospital|kindergarten"]["name"];
+  area.a["amenity"~"university|college|school|hospital|kindergarten"];
   area.a["landuse"~"residential|commercial|retail|industrial"]["name"];
-  area.a["building"~"apartments|university|hospital|school"]["name"];
+  area.a["building"~"apartments|university|hospital|school"];
 )->.zone;
 way["building"](area.zone);
 out geom;
 ''';
-    final campusBuildings = await _fetchAllBuildings(campusQuery);
+    final campusBuildings = await _fetchAllBuildings(campusQuery, tag: 'campus');
     if (campusBuildings.isNotEmpty) return campusBuildings;
 
-    // 2단계: 도로 기준 - 해당 도로의 양쪽 건물 전부
+    // 2단계: 근처 500m 내 캠퍼스 area 찾아서 그 안에 현재 위치가 포함되면 사용
+    final nearbyQuery = '''
+[out:json];
+(
+  way["amenity"~"university|college|school|hospital"](around:600,$lat,$lng);
+  relation["amenity"~"university|college|school|hospital"](around:600,$lat,$lng);
+)->.campus;
+map_to_area.campus->.campus_area;
+way["building"](area.campus_area);
+out geom;
+''';
+    final nearbyBuildings = await _fetchAllBuildings(nearbyQuery, tag: 'nearby');
+    if (nearbyBuildings.isNotEmpty) return nearbyBuildings;
+
+    // 3단계: 도로 기준 - 해당 도로의 양쪽 건물 전부
     final streetQuery = '''
 [out:json];
 way(around:60,$lat,$lng)["highway"]["name"]->.street;
 way["building"](around.street:40);
 out geom;
 ''';
-    final streetBuildings = await _fetchAllBuildings(streetQuery);
+    final streetBuildings = await _fetchAllBuildings(streetQuery, tag: 'street');
     if (streetBuildings.isNotEmpty) return streetBuildings;
 
-    // 3단계: GPS 위치를 포함하는 단일 건물
+    // 4단계: GPS 위치를 포함하는 단일 건물
     final isInQuery =
         '[out:json];is_in($lat,$lng)->.a;way["building"](pivot.a);out geom;';
-    final isInBuildings = await _fetchAllBuildings(isInQuery);
+    final isInBuildings = await _fetchAllBuildings(isInQuery, tag: 'isin');
     if (isInBuildings.isNotEmpty) return isInBuildings;
 
-    // 4단계: 야외 → 원형
+    // 5단계: 야외 → 원형
+    debugPrint('Overpass: 모든 단계 실패 → 원형 폴백');
     return [_makeCirclePolygon(lat, lng, 25)];
   }
 
-  Future<List<List<List<double>>>> _fetchAllBuildings(String query) async {
+  Future<List<List<List<double>>>> _fetchAllBuildings(String query, {String tag = ''}) async {
     try {
       final url = Uri.parse(
         'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(query)}',
       );
-      final res = await http.get(url).timeout(const Duration(seconds: 15));
-      if (res.statusCode != 200) return [];
+      final res = await http.get(url).timeout(const Duration(seconds: 25));
+      if (res.statusCode != 200) {
+        debugPrint('Overpass[$tag] HTTP ${res.statusCode}');
+        return [];
+      }
       final elements =
           (jsonDecode(res.body) as Map)['elements'] as List? ?? [];
+      debugPrint('Overpass[$tag] elements: ${elements.length}');
 
       final polys = <List<List<double>>>[];
       for (final el in elements) {
@@ -164,9 +183,10 @@ out geom;
             .toList();
         polys.add(_simplifyPolygon(poly));
       }
+      debugPrint('Overpass[$tag] 폴리곤: ${polys.length}');
       return polys;
     } catch (e) {
-      debugPrint('Overpass 오류: $e');
+      debugPrint('Overpass[$tag] 오류: $e');
       return [];
     }
   }
