@@ -68,7 +68,7 @@ class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
   static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
-  static const String _polygonsKey = 'capsule_polygons_v8';
+  static const String _polygonsKey = 'capsule_polygons_v9';
 
   MapboxMap? _map;
   PointAnnotationManager? _pinManager;
@@ -184,6 +184,8 @@ out geom;
                   (n['lat'] as num).toDouble(),
                 ])
             .toList();
+        // 200m 이상의 거대 폴리곤(캠퍼스 경계선 등) 제외
+        if (_polyBboxMeters(poly) > 200) continue;
         polys.add(_simplifyPolygon(poly));
       }
       debugPrint('Overpass[$tag] 폴리곤: ${polys.length}');
@@ -192,6 +194,21 @@ out geom;
       debugPrint('Overpass[$tag] 오류: $e');
       return [];
     }
+  }
+
+  // 폴리곤 바운딩박스의 긴 변 길이(미터) 반환
+  double _polyBboxMeters(List<List<double>> poly) {
+    double minLat = poly[0][1], maxLat = poly[0][1];
+    double minLng = poly[0][0], maxLng = poly[0][0];
+    for (final pt in poly) {
+      if (pt[1] < minLat) minLat = pt[1];
+      if (pt[1] > maxLat) maxLat = pt[1];
+      if (pt[0] < minLng) minLng = pt[0];
+      if (pt[0] > maxLng) maxLng = pt[0];
+    }
+    final dLat = (maxLat - minLat) * 111320;
+    final dLng = (maxLng - minLng) * 111320 * math.cos(minLat * math.pi / 180);
+    return math.max(dLat, dLng);
   }
 
   List<List<double>> _simplifyPolygon(List<List<double>> poly,
