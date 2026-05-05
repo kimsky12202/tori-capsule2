@@ -162,7 +162,10 @@ out geom;
       final url = Uri.parse(
         'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(query)}',
       );
-      final res = await http.get(url).timeout(const Duration(seconds: 25));
+      final res = await http.get(url, headers: {
+        'User-Agent': 'tori-capsule/1.0 (Flutter)',
+        'Accept': 'application/json',
+      }).timeout(const Duration(seconds: 25));
       if (res.statusCode != 200) {
         debugPrint('Overpass[$tag] HTTP ${res.statusCode}');
         return [];
