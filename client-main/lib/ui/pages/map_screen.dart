@@ -68,7 +68,7 @@ class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
   static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
-  static const String _polygonsKey = 'capsule_polygons_v5';
+  static const String _polygonsKey = 'capsule_polygons_v6';
 
   MapboxMap? _map;
   PointAnnotationManager? _pinManager;
@@ -102,10 +102,31 @@ class MapScreenState extends State<MapScreen>
     super.dispose();
   }
 
-  // ── 도로 기준 건물 폴리곤 쿼리 ──────────────────────────
+  // ── 구역 기반 건물 폴리곤 쿼리 ──────────────────────────
+  // 우선순위: 대학/병원/학교 캠퍼스 > 아파트 단지 > 도로 기준 > 단일 건물
   Future<List<List<List<double>>>> _queryStreetBuildings(
       double lat, double lng) async {
-    // 1단계: 가장 가까운 named 도로 찾고, 그 도로 주변 건물 전부 가져오기
+    // 1단계: 대학, 병원, 학교, 아파트 단지 등 논리적 구역 안에 있는지 확인
+    //   is_in으로 포함 구역을 찾고, map_to_area로 변환 후 건물 전부 추출
+    final campusQuery = '''
+[out:json];
+is_in($lat,$lng)->.a;
+(
+  way(pivot.a)["amenity"~"^(university|college|school|hospital|kindergarten)\$"]["name"];
+  rel(pivot.a)["amenity"~"^(university|college|school|hospital|kindergarten)\$"]["name"];
+  way(pivot.a)["landuse"~"^(residential|commercial|retail|industrial)\$"]["name"];
+  rel(pivot.a)["landuse"~"^(residential|commercial|retail|industrial)\$"]["name"];
+  way(pivot.a)["building"~"^(apartments|university|hospital|school)\$"]["name"];
+  rel(pivot.a)["building"~"^(apartments|university|hospital|school)\$"]["name"];
+)->.zone;
+map_to_area.zone->.zone_area;
+way["building"](area.zone_area);
+out geom;
+''';
+    final campusBuildings = await _fetchAllBuildings(campusQuery);
+    if (campusBuildings.isNotEmpty) return campusBuildings;
+
+    // 2단계: 도로 기준 - 해당 도로의 양쪽 건물 전부
     final streetQuery = '''
 [out:json];
 way(around:60,$lat,$lng)["highway"]["name"]->.street;
@@ -115,13 +136,13 @@ out geom;
     final streetBuildings = await _fetchAllBuildings(streetQuery);
     if (streetBuildings.isNotEmpty) return streetBuildings;
 
-    // 2단계: 도로명 없으면 GPS 포함 건물만
+    // 3단계: GPS 위치를 포함하는 단일 건물
     final isInQuery =
         '[out:json];is_in($lat,$lng)->.a;way["building"](pivot.a);out geom;';
     final isInBuildings = await _fetchAllBuildings(isInQuery);
     if (isInBuildings.isNotEmpty) return isInBuildings;
 
-    // 3단계: 야외 → 원형
+    // 4단계: 야외 → 원형
     return [_makeCirclePolygon(lat, lng, 25)];
   }
 
