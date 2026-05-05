@@ -68,7 +68,7 @@ class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
   static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
-  static const String _polygonsKey = 'capsule_polygons_v2';
+  static const String _polygonsKey = 'capsule_polygons_v3';
 
   MapboxMap? _map;
   PointAnnotationManager? _pinManager;
@@ -102,22 +102,18 @@ class MapScreenState extends State<MapScreen>
   }
 
   // ── 건물 폴리곤 쿼리 ────────────────────────────────────
-  Future<List<List<double>>?> _queryBuildingPolygon(
+  Future<List<List<double>>> _queryBuildingPolygon(
       double lat, double lng) async {
-    final queries = [
-      '[out:json];way["building"](around:30,$lat,$lng);out geom;',
-      '[out:json];way["building"](around:80,$lat,$lng);out geom;',
-    ];
-    for (final q in queries) {
-      try {
-        final url = Uri.parse(
-          'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(q)}',
-        );
-        final res = await http.get(url).timeout(const Duration(seconds: 10));
-        if (res.statusCode != 200) continue;
-        final body = jsonDecode(res.body) as Map<String, dynamic>;
-        final elements = body['elements'] as List?;
-        if (elements == null || elements.isEmpty) continue;
+    final q =
+        '[out:json];way["building"](around:20,$lat,$lng);out geom;';
+    try {
+      final url = Uri.parse(
+        'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(q)}',
+      );
+      final res = await http.get(url).timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        final elements =
+            (jsonDecode(res.body) as Map)['elements'] as List? ?? [];
         for (final el in elements) {
           final geom = (el as Map)['geometry'] as List?;
           if (geom != null && geom.length >= 3) {
@@ -127,14 +123,33 @@ class MapScreenState extends State<MapScreen>
                       (n['lat'] as num).toDouble(),
                     ])
                 .toList();
-            return _simplifyPolygon(poly);
+            if (_isReasonableBuilding(poly)) {
+              return _simplifyPolygon(poly);
+            }
           }
         }
-      } catch (e) {
-        debugPrint('건물 쿼리 오류: $e');
       }
+    } catch (e) {
+      debugPrint('건물 쿼리 오류: $e');
     }
-    return _makeCirclePolygon(lat, lng, 40);
+    return _makeCirclePolygon(lat, lng, 25);
+  }
+
+  // 폴리곤이 실제 건물 크기인지 검증 (300m 이하)
+  bool _isReasonableBuilding(List<List<double>> poly) {
+    if (poly.length < 3) return false;
+    double minLat = poly[0][1], maxLat = poly[0][1];
+    double minLng = poly[0][0], maxLng = poly[0][0];
+    for (final pt in poly) {
+      if (pt[1] < minLat) minLat = pt[1];
+      if (pt[1] > maxLat) maxLat = pt[1];
+      if (pt[0] < minLng) minLng = pt[0];
+      if (pt[0] > maxLng) maxLng = pt[0];
+    }
+    final latM = (maxLat - minLat) * 111320;
+    final lngM = (maxLng - minLng) * 111320 *
+        math.cos(minLat * math.pi / 180);
+    return latM < 300 && lngM < 300;
   }
 
   List<List<double>> _simplifyPolygon(List<List<double>> poly,
@@ -570,10 +585,8 @@ class MapScreenState extends State<MapScreen>
 
       final polygon = await _queryBuildingPolygon(
           gpsPos.latitude, gpsPos.longitude);
-      if (polygon != null) {
-        _buildingPolygons[pin.id] = polygon;
-        await _savePolygons();
-      }
+      _buildingPolygons[pin.id] = polygon;
+      await _savePolygons();
       await _updateFogPositions();
     } catch (e) {
       if (mounted) {
