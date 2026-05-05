@@ -32,21 +32,12 @@ class GradientFogPainter extends CustomPainter {
       }
       path.close();
 
-      // 내부 완전히 걷힘
+      // 내부 완전히 걷힘 (블러 없음 - 건물 경계 선명하게)
       canvas.drawPath(
         path,
         Paint()
           ..blendMode = BlendMode.dstOut
           ..color = Colors.black,
-      );
-
-      // 경계 부드러운 페이드 (6px - 건물 형태 유지)
-      canvas.drawPath(
-        path,
-        Paint()
-          ..blendMode = BlendMode.dstOut
-          ..color = Colors.black.withValues(alpha: 0.5)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
       );
     }
 
