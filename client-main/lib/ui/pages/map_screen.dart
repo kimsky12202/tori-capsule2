@@ -127,7 +127,7 @@ class MapScreenState extends State<MapScreen>
       await _map!.style.setStyleLayerProperty(
         _overlayLayerId,
         'fill-opacity',
-        0.85,
+        0.72,
       );
     } catch (e) {
       debugPrint('오버레이 초기화 오류: $e');
@@ -513,6 +513,43 @@ class MapScreenState extends State<MapScreen>
     _registerTapListener();
   }
 
+  // ── 3D 건물 레이어 ───────────────────────────────────────
+  Future<void> _add3DBuildings() async {
+    if (_map == null) return;
+    try {
+      final exists = await _map!.style.styleLayerExists('3d-buildings');
+      if (exists) return;
+      await _map!.style.addLayer(
+        FillExtrusionLayer(
+          id: '3d-buildings',
+          sourceId: 'composite',
+          sourceLayer: 'building',
+          fillExtrusionOpacity: 0.75,
+          fillExtrusionColor: const Color(0xFF1C1C2E).value,
+          fillExtrusionAmbientOcclusionIntensity: 0.3,
+        ),
+      );
+      await _map!.style.setStyleLayerProperty(
+        '3d-buildings',
+        'fill-extrusion-height',
+        jsonEncode([
+          'interpolate', ['linear'], ['zoom'],
+          15, 0, 15.05, ['get', 'height'],
+        ]),
+      );
+      await _map!.style.setStyleLayerProperty(
+        '3d-buildings',
+        'fill-extrusion-base',
+        jsonEncode([
+          'interpolate', ['linear'], ['zoom'],
+          15, 0, 15.05, ['get', 'min_height'],
+        ]),
+      );
+    } catch (e) {
+      debugPrint('3D 건물 오류: $e');
+    }
+  }
+
   // ── 지도 초기화 ───────────────────────────────────────────
   Future<void> _onMapCreated(MapboxMap map) async {
     _map = map;
@@ -526,6 +563,7 @@ class MapScreenState extends State<MapScreen>
         quickZoomEnabled: true,
       ),
     );
+    await _add3DBuildings();
     await _initOverlayLayer();
     await _moveToMyLocation();
     _startTracking();
@@ -533,6 +571,7 @@ class MapScreenState extends State<MapScreen>
   }
 
   Future<void> _onStyleLoaded(StyleLoadedEventData _) async {
+    await _add3DBuildings();
     await _initOverlayLayer();
     await _updateOverlay();
   }
@@ -551,7 +590,8 @@ class MapScreenState extends State<MapScreen>
       _map?.flyTo(
         CameraOptions(
           center: Point(coordinates: Position(pos.longitude, pos.latitude)),
-          zoom: 14.0,
+          zoom: 16.0,
+          pitch: 45.0,
         ),
         MapAnimationOptions(duration: 1000),
       );
@@ -899,6 +939,7 @@ class MapScreenState extends State<MapScreen>
             cameraOptions: CameraOptions(
               center: Point(coordinates: Position(127.2890, 36.4800)),
               zoom: 6.0,
+              pitch: 45.0,
             ),
             onMapCreated: _onMapCreated,
             onStyleLoadedListener: _onStyleLoaded,
