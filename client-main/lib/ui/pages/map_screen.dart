@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart' as img_picker;
 import 'package:exif/exif.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:http/http.dart' as http;
 import 'fog_painter.dart';
 import 'dart:convert';
 import 'dart:async';
@@ -67,6 +68,7 @@ class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
   static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
+  static const String _polygonsKey = 'capsule_polygons';
 
   MapboxMap? _map;
   PointAnnotationManager? _pinManager;
@@ -75,10 +77,12 @@ class MapScreenState extends State<MapScreen>
 
   final List<CapsulePin> _pins = [];
   final Map<String, String> _markerMap = {};
+  final Map<String, List<List<double>>> _buildingPolygons = {};
   final img_picker.ImagePicker _picker = img_picker.ImagePicker();
   StreamSubscription<geo.Position>? _posSub;
 
-  List<Offset> _fogPositions = [];
+  List<List<Offset>> _fogPolygons = [];
+  List<Offset> _fogCenters = [];
   bool _isLoading = false;
   bool _tapListenerRegistered = false;
 
@@ -97,19 +101,117 @@ class MapScreenState extends State<MapScreen>
     super.dispose();
   }
 
-  // ── 그라데이션 안개 위치 업데이트 ──────────────────────────
+  // ── 건물 폴리곤 쿼리 ────────────────────────────────────
+  Future<List<List<double>>?> _queryBuildingPolygon(
+      double lat, double lng) async {
+    final queries = [
+      '[out:json];way["building"](around:30,$lat,$lng);out geom;',
+      '[out:json];way["building"](around:80,$lat,$lng);out geom;',
+    ];
+    for (final q in queries) {
+      try {
+        final url = Uri.parse(
+          'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(q)}',
+        );
+        final res = await http.get(url).timeout(const Duration(seconds: 10));
+        if (res.statusCode != 200) continue;
+        final body = jsonDecode(res.body) as Map<String, dynamic>;
+        final elements = body['elements'] as List?;
+        if (elements == null || elements.isEmpty) continue;
+        for (final el in elements) {
+          final geom = (el as Map)['geometry'] as List?;
+          if (geom != null && geom.length >= 3) {
+            final poly = geom
+                .map((n) => [
+                      (n['lon'] as num).toDouble(),
+                      (n['lat'] as num).toDouble(),
+                    ])
+                .toList();
+            return _simplifyPolygon(poly);
+          }
+        }
+      } catch (e) {
+        debugPrint('건물 쿼리 오류: $e');
+      }
+    }
+    return _makeCirclePolygon(lat, lng, 40);
+  }
+
+  List<List<double>> _simplifyPolygon(List<List<double>> poly,
+      {int max = 28}) {
+    if (poly.length <= max) return poly;
+    final step = poly.length / max;
+    return [for (int i = 0; i < max; i++) poly[(i * step).floor()]];
+  }
+
+  List<List<double>> _makeCirclePolygon(double lat, double lng,
+      double radiusMeters, {int points = 24}) {
+    const mPerDegLat = 111320.0;
+    final mPerDegLng = 111320.0 * math.cos(lat * math.pi / 180);
+    return [
+      for (int i = 0; i <= points; i++)
+        () {
+          final angle = 2 * math.pi * i / points;
+          return [
+            lng + (radiusMeters * math.cos(angle)) / mPerDegLng,
+            lat + (radiusMeters * math.sin(angle)) / mPerDegLat,
+          ];
+        }(),
+    ];
+  }
+
+  // ── 폴리곤 저장/불러오기 ─────────────────────────────────
+  Future<void> _savePolygons() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _polygonsKey,
+      jsonEncode(_buildingPolygons.map(
+        (id, coords) => MapEntry(id, jsonEncode(coords)),
+      )),
+    );
+  }
+
+  Future<void> _loadPolygons() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_polygonsKey);
+      if (raw == null) return;
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      for (final entry in map.entries) {
+        _buildingPolygons[entry.key] = (jsonDecode(entry.value as String) as List)
+            .map((c) => (c as List).map((v) => (v as num).toDouble()).toList())
+            .toList();
+      }
+    } catch (_) {}
+  }
+
+  // ── 안개 화면 좌표 업데이트 ──────────────────────────────
   Future<void> _updateFogPositions() async {
     if (_map == null || !mounted) return;
-    final positions = <Offset>[];
+    final polys = <List<Offset>>[];
+    final centers = <Offset>[];
     for (final pin in _pins) {
+      final geoPoly = _buildingPolygons[pin.id];
+      if (geoPoly == null || geoPoly.isEmpty) continue;
       try {
-        final coord = await _map!.pixelForCoordinate(
+        final screenPoly = <Offset>[];
+        for (final pt in geoPoly) {
+          final sc = await _map!.pixelForCoordinate(
+            Point(coordinates: Position(pt[0], pt[1])),
+          );
+          screenPoly.add(Offset(sc.x, sc.y));
+        }
+        polys.add(screenPoly);
+        final cc = await _map!.pixelForCoordinate(
           Point(coordinates: Position(pin.lng, pin.lat)),
         );
-        positions.add(Offset(coord.x, coord.y));
+        centers.add(Offset(cc.x, cc.y));
       } catch (_) {}
     }
-    if (mounted) setState(() => _fogPositions = positions);
+    if (mounted) setState(() {
+      _fogPolygons = polys;
+      _fogCenters = centers;
+    });
   }
 
   // ── 저장/불러오기 ─────────────────────────────────────────
@@ -121,6 +223,7 @@ class MapScreenState extends State<MapScreen>
 
   Future<void> _loadPins() async {
     final prefs = await SharedPreferences.getInstance();
+    await _loadPolygons();
     final list = prefs.getStringList(_prefsKey) ?? [];
     for (final raw in list) {
       try {
@@ -498,6 +601,12 @@ class MapScreenState extends State<MapScreen>
         MapAnimationOptions(duration: 1800),
       );
 
+      final polygon = await _queryBuildingPolygon(
+          gpsPos.latitude, gpsPos.longitude);
+      if (polygon != null) {
+        _buildingPolygons[pin.id] = polygon;
+        await _savePolygons();
+      }
       await _updateFogPositions();
     } catch (e) {
       if (mounted) {
@@ -587,8 +696,8 @@ class MapScreenState extends State<MapScreen>
             child: IgnorePointer(
               child: CustomPaint(
                 painter: GradientFogPainter(
-                  positions: _fogPositions,
-                  clearRadius: 190,
+                  polygons: _fogPolygons,
+                  centers: _fogCenters,
                 ),
               ),
             ),

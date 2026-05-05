@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 
 class GradientFogPainter extends CustomPainter {
-  final List<Offset> positions;
-  final double clearRadius;
+  final List<List<Offset>> polygons;
+  final List<Offset> centers;
 
   const GradientFogPainter({
-    required this.positions,
-    this.clearRadius = 190,
+    required this.polygons,
+    required this.centers,
   });
 
   @override
@@ -15,52 +15,60 @@ class GradientFogPainter extends CustomPainter {
 
     canvas.saveLayer(bounds, Paint());
 
-    // 아침 안개 - 흰빛 도는 연한 파란색
-    canvas.drawRect(
-      bounds,
-      Paint()..color = const Color(0xCFD6E8F0),
-    );
+    // 아침 안개
+    canvas.drawRect(bounds, Paint()..color = const Color(0xCDD4E8F2));
 
-    // 핀 위치마다 안개 걷힘 (그라데이션)
-    final clearPaint = Paint()..blendMode = BlendMode.dstOut;
-    for (final pos in positions) {
-      clearPaint.shader = RadialGradient(
-        colors: [
-          Colors.white,
-          Colors.white.withValues(alpha: 0.9),
-          Colors.white.withValues(alpha: 0.35),
-          Colors.transparent,
-        ],
-        stops: const [0.0, 0.25, 0.6, 1.0],
-      ).createShader(Rect.fromCircle(center: pos, radius: clearRadius));
-      canvas.drawCircle(pos, clearRadius, clearPaint);
+    // 건물 모양대로 안개 걷힘 (소프트 엣지)
+    for (final poly in polygons) {
+      if (poly.length < 3) continue;
+
+      final path = Path();
+      path.moveTo(poly.first.dx, poly.first.dy);
+      for (final pt in poly.skip(1)) {
+        path.lineTo(pt.dx, pt.dy);
+      }
+      path.close();
+
+      // 건물 내부 완전히 걷힘
+      canvas.drawPath(
+        path,
+        Paint()
+          ..blendMode = BlendMode.dstOut
+          ..color = Colors.black,
+      );
+
+      // 경계 부드럽게 페이드
+      canvas.drawPath(
+        path,
+        Paint()
+          ..blendMode = BlendMode.dstOut
+          ..color = Colors.black.withValues(alpha: 0.55)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18),
+      );
     }
 
     canvas.restore();
 
-    // 따뜻한 아침 햇살 글로우
-    for (final pos in positions) {
+    // 건물 위에 따뜻한 아침 햇살 글로우
+    for (final center in centers) {
       canvas.drawCircle(
-        pos,
-        clearRadius * 0.5,
+        center,
+        55,
         Paint()
-          ..color = const Color(0x28FFC06A)
-          ..maskFilter =
-              MaskFilter.blur(BlurStyle.normal, clearRadius * 0.55),
+          ..color = const Color(0x22FFB347)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 38),
       );
-      // 중심 햇살 포인트
       canvas.drawCircle(
-        pos,
-        clearRadius * 0.13,
+        center,
+        18,
         Paint()
-          ..color = const Color(0x35FFE0A0)
-          ..maskFilter =
-              MaskFilter.blur(BlurStyle.normal, clearRadius * 0.18),
+          ..color = const Color(0x30FFD580)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
       );
     }
   }
 
   @override
   bool shouldRepaint(GradientFogPainter old) =>
-      old.positions != positions || old.clearRadius != clearRadius;
+      old.polygons != polygons || old.centers != centers;
 }
