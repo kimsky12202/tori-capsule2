@@ -68,7 +68,7 @@ class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
   static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
-  static const String _polygonsKey = 'capsule_polygons_v6';
+  static const String _polygonsKey = 'capsule_polygons_v7';
 
   MapboxMap? _map;
   PointAnnotationManager? _pinManager;
@@ -107,20 +107,16 @@ class MapScreenState extends State<MapScreen>
   Future<List<List<List<double>>>> _queryStreetBuildings(
       double lat, double lng) async {
     // 1단계: 대학, 병원, 학교, 아파트 단지 등 논리적 구역 안에 있는지 확인
-    //   is_in으로 포함 구역을 찾고, map_to_area로 변환 후 건물 전부 추출
+    //   is_in은 area 객체를 반환 → area.a[tag] 로 바로 필터해야 함
     final campusQuery = '''
 [out:json];
 is_in($lat,$lng)->.a;
 (
-  way(pivot.a)["amenity"~"^(university|college|school|hospital|kindergarten)\$"]["name"];
-  rel(pivot.a)["amenity"~"^(university|college|school|hospital|kindergarten)\$"]["name"];
-  way(pivot.a)["landuse"~"^(residential|commercial|retail|industrial)\$"]["name"];
-  rel(pivot.a)["landuse"~"^(residential|commercial|retail|industrial)\$"]["name"];
-  way(pivot.a)["building"~"^(apartments|university|hospital|school)\$"]["name"];
-  rel(pivot.a)["building"~"^(apartments|university|hospital|school)\$"]["name"];
+  area.a["amenity"~"university|college|school|hospital|kindergarten"]["name"];
+  area.a["landuse"~"residential|commercial|retail|industrial"]["name"];
+  area.a["building"~"apartments|university|hospital|school"]["name"];
 )->.zone;
-map_to_area.zone->.zone_area;
-way["building"](area.zone_area);
+way["building"](area.zone);
 out geom;
 ''';
     final campusBuildings = await _fetchAllBuildings(campusQuery);
