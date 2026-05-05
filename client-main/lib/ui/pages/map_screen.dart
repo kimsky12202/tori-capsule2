@@ -178,11 +178,17 @@ class MapScreenState extends State<MapScreen>
       if (raw == null) return;
       final map = jsonDecode(raw) as Map<String, dynamic>;
       for (final entry in map.entries) {
-        _buildingPolygons[entry.key] = (jsonDecode(entry.value as String) as List)
+        final coords = (jsonDecode(entry.value as String) as List)
             .map((c) => (c as List).map((v) => (v as num).toDouble()).toList())
             .toList();
+        // 유효하지 않은 폴리곤 무시 (최소 3점 필요)
+        if (coords.length >= 3) {
+          _buildingPolygons[entry.key] = coords;
+        }
       }
-    } catch (_) {}
+    } catch (_) {
+      // 손상된 캐시는 그냥 무시
+    }
   }
 
   // ── 안개 화면 좌표 업데이트 ──────────────────────────────
@@ -681,7 +687,7 @@ class MapScreenState extends State<MapScreen>
         children: [
           MapWidget(
             key: const ValueKey('capsule_map'),
-            styleUri: 'mapbox://styles/mapbox/light-v11',
+            styleUri: 'mapbox://styles/mapbox/outdoors-v12',
             cameraOptions: CameraOptions(
               center: Point(coordinates: Position(127.2890, 36.4800)),
               zoom: 6.0,
