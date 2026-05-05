@@ -15,10 +15,10 @@ class GradientFogPainter extends CustomPainter {
 
     canvas.saveLayer(bounds, Paint());
 
-    // 아침 안개 - 따뜻한 크림빛 흰색
+    // 아침 안개 - 연한 회청색 (지도 색과 대비 확보)
     canvas.drawRect(
       bounds,
-      Paint()..color = const Color(0xC8EEE8DC),
+      Paint()..color = const Color(0xD0C8D8E8),
     );
 
     // 건물 모양대로 안개 걷힘
