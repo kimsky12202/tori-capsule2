@@ -167,7 +167,7 @@ class MapScreenState extends State<MapScreen>
           sourceId: 'composite',
           sourceLayer: 'building',
           fillExtrusionOpacity: 0.75,
-          fillExtrusionColor: const Color(0xFF1C1C2E).value,
+          fillExtrusionColor: const Color(0xFFB8C8D8).value,
           fillExtrusionAmbientOcclusionIntensity: 0.3,
         ),
       );
@@ -572,7 +572,7 @@ class MapScreenState extends State<MapScreen>
         children: [
           MapWidget(
             key: const ValueKey('capsule_map'),
-            styleUri: 'mapbox://styles/mapbox/dark-v11',
+            styleUri: 'mapbox://styles/mapbox/light-v11',
             cameraOptions: CameraOptions(
               center: Point(coordinates: Position(127.2890, 36.4800)),
               zoom: 6.0,
