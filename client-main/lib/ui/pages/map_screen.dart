@@ -4,8 +4,8 @@ import 'package:geolocator/geolocator.dart' as geo;
 import 'package:image_picker/image_picker.dart' as img_picker;
 import 'package:exif/exif.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
 import 'package:permission_handler/permission_handler.dart';
+import 'fog_painter.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:ui' show ImageByteFormat, PictureRecorder;
@@ -67,7 +67,6 @@ class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
   static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
-  static const String _polygonsKey = 'capsule_polygons';
 
   MapboxMap? _map;
   PointAnnotationManager? _pinManager;
@@ -76,15 +75,12 @@ class MapScreenState extends State<MapScreen>
 
   final List<CapsulePin> _pins = [];
   final Map<String, String> _markerMap = {};
-  final Map<String, List<List<double>>> _buildingPolygons = {};
   final img_picker.ImagePicker _picker = img_picker.ImagePicker();
   StreamSubscription<geo.Position>? _posSub;
 
+  List<Offset> _fogPositions = [];
   bool _isLoading = false;
   bool _tapListenerRegistered = false;
-
-  static const _overlaySourceId = 'night-overlay-source';
-  static const _overlayLayerId = 'night-overlay-layer';
 
   @override
   bool get wantKeepAlive => true;
@@ -101,341 +97,19 @@ class MapScreenState extends State<MapScreen>
     super.dispose();
   }
 
-  // ── Mapbox 야간 오버레이 ───────────────────────────────────
-  Future<void> _initOverlayLayer() async {
-    if (_map == null) return;
-    try {
-      final exists = await _map!.style.styleLayerExists(_overlayLayerId);
-      if (exists) {
-        await _updateOverlay();
-        return;
-      }
-      await _map!.style.addSource(
-        GeoJsonSource(
-          id: _overlaySourceId,
-          data: jsonEncode(_buildOverlayGeoJson()),
-        ),
-      );
-      await _map!.style.addLayer(
-        FillLayer(id: _overlayLayerId, sourceId: _overlaySourceId),
-      );
-      await _map!.style.setStyleLayerProperty(
-        _overlayLayerId,
-        'fill-color',
-        '#05101F',
-      );
-      await _map!.style.setStyleLayerProperty(
-        _overlayLayerId,
-        'fill-opacity',
-        0.72,
-      );
-    } catch (e) {
-      debugPrint('오버레이 초기화 오류: $e');
+  // ── 그라데이션 안개 위치 업데이트 ──────────────────────────
+  Future<void> _updateFogPositions() async {
+    if (_map == null || !mounted) return;
+    final positions = <Offset>[];
+    for (final pin in _pins) {
+      try {
+        final coord = await _map!.pixelForCoordinate(
+          Point(coordinates: Position(pin.lng, pin.lat)),
+        );
+        positions.add(Offset(coord.x, coord.y));
+      } catch (_) {}
     }
-  }
-
-  Future<void> _updateOverlay() async {
-    if (_map == null) return;
-    try {
-      await _map!.style.setStyleSourceProperty(
-        _overlaySourceId,
-        'data',
-        jsonEncode(_buildOverlayGeoJson()),
-      );
-    } catch (e) {
-      debugPrint('오버레이 업데이트 오류: $e');
-    }
-  }
-
-  /// 겹치는 폴리곤들을 Convex Hull로 병합하여 GeoJSON 생성
-  /// → 겹친 영역이 어두워지는 버그 수정
-  Map<String, dynamic> _buildOverlayGeoJson() {
-    final rings = <List<List<double>>>[
-      // 외부 링: CCW (전 세계)
-      [
-        [-180.0, -85.0],
-        [180.0, -85.0],
-        [180.0, 85.0],
-        [-180.0, 85.0],
-        [-180.0, -85.0],
-      ],
-    ];
-    // 겹치는 폴리곤 병합 후 hole로 추가
-    for (final polygon in _getMergedPolygons()) {
-      if (polygon.length >= 3) {
-        rings.add(_toClockwise(polygon));
-      }
-    }
-    return {
-      'type': 'Feature',
-      'geometry': {'type': 'Polygon', 'coordinates': rings},
-    };
-  }
-
-  /// 겹치는 폴리곤들을 그룹화하여 Convex Hull로 병합
-  /// 겹치지 않는 폴리곤은 그대로 반환
-  List<List<List<double>>> _getMergedPolygons() {
-    final polygons = _buildingPolygons.values.toList();
-    if (polygons.isEmpty) return [];
-    if (polygons.length == 1) return polygons;
-
-    // Union-Find로 겹치는 그룹 탐색
-    final parent = List.generate(polygons.length, (i) => i);
-
-    int find(int x) {
-      while (parent[x] != x) {
-        parent[x] = parent[parent[x]];
-        x = parent[x];
-      }
-      return x;
-    }
-
-    void union(int a, int b) {
-      parent[find(a)] = find(b);
-    }
-
-    for (int i = 0; i < polygons.length; i++) {
-      for (int j = i + 1; j < polygons.length; j++) {
-        if (_polygonsOverlap(polygons[i], polygons[j])) {
-          union(i, j);
-        }
-      }
-    }
-
-    // 그룹별 점 모아서 Convex Hull 계산
-    final groups = <int, List<List<double>>>{};
-    for (int i = 0; i < polygons.length; i++) {
-      groups.putIfAbsent(find(i), () => []).addAll(polygons[i]);
-    }
-
-    return groups.values.map(_convexHull).toList();
-  }
-
-  /// 두 폴리곤이 겹치는지 확인 (바운딩 박스 + 점-내부 테스트)
-  bool _polygonsOverlap(List<List<double>> a, List<List<double>> b) {
-    final bboxA = _bbox(a);
-    final bboxB = _bbox(b);
-    // 바운딩 박스가 겹치지 않으면 빠른 탈출
-    if (bboxA[2] < bboxB[0] || bboxB[2] < bboxA[0] ||
-        bboxA[3] < bboxB[1] || bboxB[3] < bboxA[1]) return false;
-    // 점-in-폴리곤 테스트
-    for (final pt in a) {
-      if (_pointInPolygon(pt, b)) return true;
-    }
-    for (final pt in b) {
-      if (_pointInPolygon(pt, a)) return true;
-    }
-    return false;
-  }
-
-  List<double> _bbox(List<List<double>> poly) {
-    double minX = double.infinity, minY = double.infinity;
-    double maxX = double.negativeInfinity, maxY = double.negativeInfinity;
-    for (final pt in poly) {
-      if (pt[0] < minX) minX = pt[0];
-      if (pt[1] < minY) minY = pt[1];
-      if (pt[0] > maxX) maxX = pt[0];
-      if (pt[1] > maxY) maxY = pt[1];
-    }
-    return [minX, minY, maxX, maxY];
-  }
-
-  bool _pointInPolygon(List<double> point, List<List<double>> polygon) {
-    bool inside = false;
-    final x = point[0], y = point[1];
-    for (int i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-      final xi = polygon[i][0], yi = polygon[i][1];
-      final xj = polygon[j][0], yj = polygon[j][1];
-      if ((yi > y) != (yj > y) &&
-          x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
-        inside = !inside;
-      }
-    }
-    return inside;
-  }
-
-  /// Graham Scan으로 Convex Hull 계산 (GeoJSON 링 형식으로 반환)
-  List<List<double>> _convexHull(List<List<double>> pts) {
-    if (pts.length < 3) {
-      final result = List<List<double>>.from(pts);
-      if (result.isNotEmpty) result.add(result.first);
-      return result;
-    }
-
-    final points = List<List<double>>.from(pts);
-
-    // 가장 아래쪽(y 최소, 동일하면 x 최소) 점 찾기
-    int startIdx = 0;
-    for (int i = 1; i < points.length; i++) {
-      if (points[i][1] < points[startIdx][1] ||
-          (points[i][1] == points[startIdx][1] &&
-              points[i][0] < points[startIdx][0])) {
-        startIdx = i;
-      }
-    }
-    final start = points.removeAt(startIdx);
-
-    // 극각 기준 정렬
-    points.sort((a, b) {
-      final angleA = math.atan2(a[1] - start[1], a[0] - start[0]);
-      final angleB = math.atan2(b[1] - start[1], b[0] - start[0]);
-      final diff = angleA - angleB;
-      if (diff.abs() > 1e-10) return diff < 0 ? -1 : 1;
-      final dA = (a[0] - start[0]) * (a[0] - start[0]) +
-          (a[1] - start[1]) * (a[1] - start[1]);
-      final dB = (b[0] - start[0]) * (b[0] - start[0]) +
-          (b[1] - start[1]) * (b[1] - start[1]);
-      return dA.compareTo(dB);
-    });
-
-    final hull = <List<double>>[start];
-    for (final p in points) {
-      while (hull.length >= 2 &&
-          _cross(hull[hull.length - 2], hull.last, p) <= 0) {
-        hull.removeLast();
-      }
-      hull.add(p);
-    }
-    hull.add(hull.first); // 링 닫기
-    return hull;
-  }
-
-  double _cross(List<double> o, List<double> a, List<double> b) {
-    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-  }
-
-  /// 링을 시계방향(CW)으로 보장 (GeoJSON hole 요건)
-  List<List<double>> _toClockwise(List<List<double>> ring) {
-    double area = 0;
-    for (int i = 0; i < ring.length - 1; i++) {
-      area += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
-    }
-    return area > 0 ? ring.reversed.toList() : ring;
-  }
-
-  // ── OSM Overpass API ─────────────────────────────────────
-  List<List<double>>? _extractPolygon(Map<String, dynamic> body) {
-    final elements = body['elements'] as List?;
-    if (elements == null || elements.isEmpty) return null;
-
-    List<List<double>>? parseGeom(List geom) {
-      if (geom.length < 3) return null;
-      return geom.map((node) {
-        final n = node as Map;
-        return [(n['lon'] as num).toDouble(), (n['lat'] as num).toDouble()];
-      }).toList();
-    }
-
-    for (final el in elements) {
-      final map = el as Map;
-      final geom = map['geometry'] as List?;
-      if (geom != null) {
-        final poly = parseGeom(geom);
-        if (poly != null) return poly;
-      }
-      final members = map['members'] as List?;
-      if (members != null) {
-        for (final member in members) {
-          final m = member as Map;
-          if (m['role'] == 'outer') {
-            final mGeom = m['geometry'] as List?;
-            if (mGeom != null) {
-              final poly = parseGeom(mGeom);
-              if (poly != null) return poly;
-            }
-          }
-        }
-      }
-    }
-    return null;
-  }
-
-  Future<void> _queryBuildingForPin(CapsulePin pin) async {
-    final lat = pin.lat, lng = pin.lng;
-
-    Future<Map<String, dynamic>?> overpassGet(String q) async {
-      final url = Uri.parse(
-        'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(q)}',
-      );
-      for (int attempt = 1; attempt <= 3; attempt++) {
-        try {
-          final res =
-              await http.get(url).timeout(const Duration(seconds: 15));
-          if (res.statusCode == 200) {
-            return jsonDecode(res.body) as Map<String, dynamic>;
-          }
-          if (res.statusCode == 429) {
-            await Future.delayed(Duration(seconds: attempt * 5));
-          } else {
-            break;
-          }
-        } catch (e) {
-          debugPrint('Overpass 오류: $e');
-          break;
-        }
-      }
-      return null;
-    }
-
-    try {
-      // 1단계: is_in으로 관광지/공원/대학/단지 경계
-      final areaQ =
-          '[out:json];is_in($lat,$lng)->.a;('
-          'way["tourism"](pivot.a);'
-          'way["leisure"="park"](pivot.a);'
-          'way["leisure"="nature_reserve"](pivot.a);'
-          'way["historic"](pivot.a);'
-          'way["amenity"="university"](pivot.a);'
-          'way["landuse"="residential"](pivot.a);'
-          'way["landuse"="apartments"](pivot.a);'
-          'relation["tourism"](pivot.a);'
-          'relation["leisure"="park"](pivot.a);'
-          ');out geom;';
-      final areaBody = await overpassGet(areaQ);
-      if (areaBody != null) {
-        final polygon = _extractPolygon(areaBody);
-        if (polygon != null) {
-          _buildingPolygons[pin.id] = polygon;
-          return;
-        }
-      }
-
-      // 2단계: 반경 50m 내 개별 건물
-      final buildingQ =
-          '[out:json];way["building"](around:50,$lat,$lng);out geom;';
-      final buildingBody = await overpassGet(buildingQ);
-      if (buildingBody != null) {
-        final polygon = _extractPolygon(buildingBody);
-        if (polygon != null) {
-          _buildingPolygons[pin.id] = polygon;
-          return;
-        }
-      }
-
-      // 3단계: 원형 fallback (반경 80m)
-      _buildingPolygons[pin.id] = _makeCirclePolygon(lat, lng, 80);
-    } catch (e) {
-      debugPrint('건물 쿼리 오류: $e');
-      _buildingPolygons[pin.id] = _makeCirclePolygon(lat, lng, 80);
-    }
-  }
-
-  List<List<double>> _makeCirclePolygon(
-    double lat,
-    double lng,
-    double radiusMeters, {
-    int points = 36,
-  }) {
-    const mPerDegLat = 111320.0;
-    final mPerDegLng = 111320.0 * math.cos(lat * math.pi / 180);
-    final ring = <List<double>>[];
-    for (int i = 0; i <= points; i++) {
-      final angle = 2 * math.pi * i / points;
-      final dlat = (radiusMeters * math.sin(angle)) / mPerDegLat;
-      final dlng = (radiusMeters * math.cos(angle)) / mPerDegLng;
-      ring.add([lng + dlng, lat + dlat]);
-    }
-    return ring;
+    if (mounted) setState(() => _fogPositions = positions);
   }
 
   // ── 저장/불러오기 ─────────────────────────────────────────
@@ -445,35 +119,8 @@ class MapScreenState extends State<MapScreen>
     await prefs.setStringList(_prefsKey, list);
   }
 
-  Future<void> _savePolygons() async {
-    final prefs = await SharedPreferences.getInstance();
-    final map = _buildingPolygons.map(
-      (id, coords) => MapEntry(id, jsonEncode(coords)),
-    );
-    await prefs.setString(_polygonsKey, jsonEncode(map));
-  }
-
-  Future<void> _loadPolygons() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_polygonsKey);
-      if (raw == null) return;
-      final map = jsonDecode(raw) as Map<String, dynamic>;
-      for (final entry in map.entries) {
-        final coords = (jsonDecode(entry.value as String) as List)
-            .map(
-              (c) =>
-                  (c as List).map((v) => (v as num).toDouble()).toList(),
-            )
-            .toList();
-        _buildingPolygons[entry.key] = coords;
-      }
-    } catch (_) {}
-  }
-
   Future<void> _loadPins() async {
     final prefs = await SharedPreferences.getInstance();
-    await _loadPolygons();
     final list = prefs.getStringList(_prefsKey) ?? [];
     for (final raw in list) {
       try {
@@ -483,15 +130,10 @@ class MapScreenState extends State<MapScreen>
         if (pin.photoPath == null || File(pin.photoPath!).existsSync()) {
           _pins.add(pin);
           await _addMarkerToMap(pin);
-          if (!_buildingPolygons.containsKey(pin.id)) {
-            await Future.delayed(const Duration(seconds: 2));
-            await _queryBuildingForPin(pin);
-            await _savePolygons();
-          }
         }
       } catch (_) {}
     }
-    await _updateOverlay();
+    await _updateFogPositions();
   }
 
   Future<void> _addMarkerToMap(CapsulePin pin) async {
@@ -564,7 +206,6 @@ class MapScreenState extends State<MapScreen>
       ),
     );
     await _add3DBuildings();
-    await _initOverlayLayer();
     await _moveToMyLocation();
     _startTracking();
     await _loadPins();
@@ -572,8 +213,7 @@ class MapScreenState extends State<MapScreen>
 
   Future<void> _onStyleLoaded(StyleLoadedEventData _) async {
     await _add3DBuildings();
-    await _initOverlayLayer();
-    await _updateOverlay();
+    await _updateFogPositions();
   }
 
   Future<void> _moveToMyLocation() async {
@@ -858,10 +498,7 @@ class MapScreenState extends State<MapScreen>
         MapAnimationOptions(duration: 1800),
       );
 
-      await Future.delayed(const Duration(milliseconds: 1000));
-      await _queryBuildingForPin(pin);
-      await _savePolygons();
-      await _updateOverlay();
+      await _updateFogPositions();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -943,6 +580,18 @@ class MapScreenState extends State<MapScreen>
             ),
             onMapCreated: _onMapCreated,
             onStyleLoadedListener: _onStyleLoaded,
+            onCameraChangeListener: (_) => _updateFogPositions(),
+          ),
+          // 그라데이션 안개 오버레이
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: GradientFogPainter(
+                  positions: _fogPositions,
+                  clearRadius: 190,
+                ),
+              ),
+            ),
           ),
           if (_isLoading)
             Container(
