@@ -15,10 +15,13 @@ class GradientFogPainter extends CustomPainter {
 
     canvas.saveLayer(bounds, Paint());
 
-    // 아침 안개
-    canvas.drawRect(bounds, Paint()..color = const Color(0xCDD4E8F2));
+    // 아침 안개 - 따뜻한 크림빛 흰색
+    canvas.drawRect(
+      bounds,
+      Paint()..color = const Color(0xC8EEE8DC),
+    );
 
-    // 건물 모양대로 안개 걷힘 (소프트 엣지)
+    // 건물 모양대로 안개 걷힘
     for (final poly in polygons) {
       if (poly.length < 3) continue;
 
@@ -29,7 +32,7 @@ class GradientFogPainter extends CustomPainter {
       }
       path.close();
 
-      // 건물 내부 완전히 걷힘
+      // 내부 완전히 걷힘
       canvas.drawPath(
         path,
         Paint()
@@ -37,33 +40,33 @@ class GradientFogPainter extends CustomPainter {
           ..color = Colors.black,
       );
 
-      // 경계 부드럽게 페이드
+      // 경계 부드러운 페이드 (20px)
       canvas.drawPath(
         path,
         Paint()
           ..blendMode = BlendMode.dstOut
-          ..color = Colors.black.withValues(alpha: 0.55)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18),
+          ..color = Colors.black.withValues(alpha: 0.6)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 20),
       );
     }
 
     canvas.restore();
 
-    // 건물 위에 따뜻한 아침 햇살 글로우
+    // 아침 햇살 글로우
     for (final center in centers) {
       canvas.drawCircle(
         center,
-        55,
+        70,
         Paint()
-          ..color = const Color(0x22FFB347)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 38),
+          ..color = const Color(0x1EFFA040)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 45),
       );
       canvas.drawCircle(
         center,
-        18,
+        22,
         Paint()
-          ..color = const Color(0x30FFD580)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
+          ..color = const Color(0x28FFD080)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 16),
       );
     }
   }

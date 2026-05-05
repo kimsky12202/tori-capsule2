@@ -68,7 +68,7 @@ class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
   static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
-  static const String _polygonsKey = 'capsule_polygons';
+  static const String _polygonsKey = 'capsule_polygons_v2';
 
   MapboxMap? _map;
   PointAnnotationManager? _pinManager;
@@ -687,7 +687,7 @@ class MapScreenState extends State<MapScreen>
         children: [
           MapWidget(
             key: const ValueKey('capsule_map'),
-            styleUri: 'mapbox://styles/mapbox/outdoors-v12',
+            styleUri: MapboxStyles.STANDARD,
             cameraOptions: CameraOptions(
               center: Point(coordinates: Position(127.2890, 36.4800)),
               zoom: 6.0,
