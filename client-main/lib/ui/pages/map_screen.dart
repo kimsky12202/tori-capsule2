@@ -68,7 +68,7 @@ class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
   static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
-  static const String _polygonsKey = 'capsule_polygons_v3';
+  static const String _polygonsKey = 'capsule_polygons_v4';
 
   MapboxMap? _map;
   PointAnnotationManager? _pinManager;
@@ -104,52 +104,65 @@ class MapScreenState extends State<MapScreen>
   // ── 건물 폴리곤 쿼리 ────────────────────────────────────
   Future<List<List<double>>> _queryBuildingPolygon(
       double lat, double lng) async {
-    final q =
-        '[out:json];way["building"](around:20,$lat,$lng);out geom;';
-    try {
-      final url = Uri.parse(
-        'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(q)}',
-      );
-      final res = await http.get(url).timeout(const Duration(seconds: 10));
-      if (res.statusCode == 200) {
-        final elements =
-            (jsonDecode(res.body) as Map)['elements'] as List? ?? [];
-        for (final el in elements) {
-          final geom = (el as Map)['geometry'] as List?;
-          if (geom != null && geom.length >= 3) {
-            final poly = geom
-                .map((n) => [
-                      (n['lon'] as num).toDouble(),
-                      (n['lat'] as num).toDouble(),
-                    ])
-                .toList();
-            if (_isReasonableBuilding(poly)) {
-              return _simplifyPolygon(poly);
-            }
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('건물 쿼리 오류: $e');
-    }
+    // 1단계: GPS 좌표가 정확히 포함된 건물 (is_in)
+    final isInQuery =
+        '[out:json];is_in($lat,$lng)->.a;way["building"](pivot.a);out geom;';
+    final result = await _overpassFetch(isInQuery);
+    if (result != null) return result;
+
+    // 2단계: 실내 GPS 오차 감안, 10m 이내 가장 가까운 건물
+    final nearQuery =
+        '[out:json];way["building"](around:10,$lat,$lng);out geom;';
+    final nearResult = await _overpassFetch(nearQuery);
+    if (nearResult != null) return nearResult;
+
+    // 3단계: 야외 촬영 → 작은 원형
     return _makeCirclePolygon(lat, lng, 25);
   }
 
-  // 폴리곤이 실제 건물 크기인지 검증 (300m 이하)
-  bool _isReasonableBuilding(List<List<double>> poly) {
-    if (poly.length < 3) return false;
-    double minLat = poly[0][1], maxLat = poly[0][1];
-    double minLng = poly[0][0], maxLng = poly[0][0];
-    for (final pt in poly) {
-      if (pt[1] < minLat) minLat = pt[1];
-      if (pt[1] > maxLat) maxLat = pt[1];
-      if (pt[0] < minLng) minLng = pt[0];
-      if (pt[0] > maxLng) maxLng = pt[0];
+  Future<List<List<double>>?> _overpassFetch(String query) async {
+    try {
+      final url = Uri.parse(
+        'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(query)}',
+      );
+      final res = await http.get(url).timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return null;
+      final elements =
+          (jsonDecode(res.body) as Map)['elements'] as List? ?? [];
+
+      // 면적이 가장 작은 건물 선택 (가장 구체적인 건물)
+      List<List<double>>? best;
+      double bestArea = double.infinity;
+
+      for (final el in elements) {
+        final geom = (el as Map)['geometry'] as List?;
+        if (geom == null || geom.length < 3) continue;
+        final poly = geom
+            .map((n) => [
+                  (n['lon'] as num).toDouble(),
+                  (n['lat'] as num).toDouble(),
+                ])
+            .toList();
+        final area = _polygonArea(poly);
+        if (area < bestArea) {
+          bestArea = area;
+          best = poly;
+        }
+      }
+      return best != null ? _simplifyPolygon(best) : null;
+    } catch (e) {
+      debugPrint('Overpass 오류: $e');
+      return null;
     }
-    final latM = (maxLat - minLat) * 111320;
-    final lngM = (maxLng - minLng) * 111320 *
-        math.cos(minLat * math.pi / 180);
-    return latM < 300 && lngM < 300;
+  }
+
+  // 폴리곤 면적 계산 (Shoelace)
+  double _polygonArea(List<List<double>> poly) {
+    double area = 0;
+    for (int i = 0; i < poly.length - 1; i++) {
+      area += poly[i][0] * poly[i + 1][1] - poly[i + 1][0] * poly[i][1];
+    }
+    return area.abs() / 2;
   }
 
   List<List<double>> _simplifyPolygon(List<List<double>> poly,
