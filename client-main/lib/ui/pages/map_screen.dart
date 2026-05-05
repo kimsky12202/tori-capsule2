@@ -68,7 +68,7 @@ class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
   static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
-  static const String _polygonsKey = 'capsule_polygons_v4';
+  static const String _polygonsKey = 'capsule_polygons_v5';
 
   MapboxMap? _map;
   PointAnnotationManager? _pinManager;
@@ -77,7 +77,8 @@ class MapScreenState extends State<MapScreen>
 
   final List<CapsulePin> _pins = [];
   final Map<String, String> _markerMap = {};
-  final Map<String, List<List<double>>> _buildingPolygons = {};
+  // 핀 하나에 여러 건물 폴리곤 (같은 도로의 모든 건물)
+  final Map<String, List<List<List<double>>>> _buildingPolygons = {};
   final img_picker.ImagePicker _picker = img_picker.ImagePicker();
   StreamSubscription<geo.Position>? _posSub;
 
@@ -101,39 +102,40 @@ class MapScreenState extends State<MapScreen>
     super.dispose();
   }
 
-  // ── 건물 폴리곤 쿼리 ────────────────────────────────────
-  Future<List<List<double>>> _queryBuildingPolygon(
+  // ── 도로 기준 건물 폴리곤 쿼리 ──────────────────────────
+  Future<List<List<List<double>>>> _queryStreetBuildings(
       double lat, double lng) async {
-    // 1단계: GPS 좌표가 정확히 포함된 건물 (is_in)
+    // 1단계: 가장 가까운 named 도로 찾고, 그 도로 주변 건물 전부 가져오기
+    final streetQuery = '''
+[out:json];
+way(around:60,$lat,$lng)["highway"]["name"]->.street;
+way["building"](around.street:40);
+out geom;
+''';
+    final streetBuildings = await _fetchAllBuildings(streetQuery);
+    if (streetBuildings.isNotEmpty) return streetBuildings;
+
+    // 2단계: 도로명 없으면 GPS 포함 건물만
     final isInQuery =
         '[out:json];is_in($lat,$lng)->.a;way["building"](pivot.a);out geom;';
-    final result = await _overpassFetch(isInQuery);
-    if (result != null) return result;
+    final isInBuildings = await _fetchAllBuildings(isInQuery);
+    if (isInBuildings.isNotEmpty) return isInBuildings;
 
-    // 2단계: 실내 GPS 오차 감안, 10m 이내 가장 가까운 건물
-    final nearQuery =
-        '[out:json];way["building"](around:10,$lat,$lng);out geom;';
-    final nearResult = await _overpassFetch(nearQuery);
-    if (nearResult != null) return nearResult;
-
-    // 3단계: 야외 촬영 → 작은 원형
-    return _makeCirclePolygon(lat, lng, 25);
+    // 3단계: 야외 → 원형
+    return [_makeCirclePolygon(lat, lng, 25)];
   }
 
-  Future<List<List<double>>?> _overpassFetch(String query) async {
+  Future<List<List<List<double>>>> _fetchAllBuildings(String query) async {
     try {
       final url = Uri.parse(
         'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(query)}',
       );
-      final res = await http.get(url).timeout(const Duration(seconds: 12));
-      if (res.statusCode != 200) return null;
+      final res = await http.get(url).timeout(const Duration(seconds: 15));
+      if (res.statusCode != 200) return [];
       final elements =
           (jsonDecode(res.body) as Map)['elements'] as List? ?? [];
 
-      // 면적이 가장 작은 건물 선택 (가장 구체적인 건물)
-      List<List<double>>? best;
-      double bestArea = double.infinity;
-
+      final polys = <List<List<double>>>[];
       for (final el in elements) {
         final geom = (el as Map)['geometry'] as List?;
         if (geom == null || geom.length < 3) continue;
@@ -143,26 +145,13 @@ class MapScreenState extends State<MapScreen>
                   (n['lat'] as num).toDouble(),
                 ])
             .toList();
-        final area = _polygonArea(poly);
-        if (area < bestArea) {
-          bestArea = area;
-          best = poly;
-        }
+        polys.add(_simplifyPolygon(poly));
       }
-      return best != null ? _simplifyPolygon(best) : null;
+      return polys;
     } catch (e) {
       debugPrint('Overpass 오류: $e');
-      return null;
+      return [];
     }
-  }
-
-  // 폴리곤 면적 계산 (Shoelace)
-  double _polygonArea(List<List<double>> poly) {
-    double area = 0;
-    for (int i = 0; i < poly.length - 1; i++) {
-      area += poly[i][0] * poly[i + 1][1] - poly[i + 1][0] * poly[i][1];
-    }
-    return area.abs() / 2;
   }
 
   List<List<double>> _simplifyPolygon(List<List<double>> poly,
@@ -194,7 +183,7 @@ class MapScreenState extends State<MapScreen>
     await prefs.setString(
       _polygonsKey,
       jsonEncode(_buildingPolygons.map(
-        (id, coords) => MapEntry(id, jsonEncode(coords)),
+        (id, polys) => MapEntry(id, jsonEncode(polys)),
       )),
     );
   }
@@ -206,17 +195,16 @@ class MapScreenState extends State<MapScreen>
       if (raw == null) return;
       final map = jsonDecode(raw) as Map<String, dynamic>;
       for (final entry in map.entries) {
-        final coords = (jsonDecode(entry.value as String) as List)
-            .map((c) => (c as List).map((v) => (v as num).toDouble()).toList())
+        final polys = (jsonDecode(entry.value as String) as List)
+            .map((poly) => (poly as List)
+                .map((c) =>
+                    (c as List).map((v) => (v as num).toDouble()).toList())
+                .toList())
+            .where((poly) => poly.length >= 3)
             .toList();
-        // 유효하지 않은 폴리곤 무시 (최소 3점 필요)
-        if (coords.length >= 3) {
-          _buildingPolygons[entry.key] = coords;
-        }
+        if (polys.isNotEmpty) _buildingPolygons[entry.key] = polys;
       }
-    } catch (_) {
-      // 손상된 캐시는 그냥 무시
-    }
+    } catch (_) {}
   }
 
   // ── 안개 화면 좌표 업데이트 ──────────────────────────────
@@ -225,17 +213,20 @@ class MapScreenState extends State<MapScreen>
     final polys = <List<Offset>>[];
     final centers = <Offset>[];
     for (final pin in _pins) {
-      final geoPoly = _buildingPolygons[pin.id];
-      if (geoPoly == null || geoPoly.isEmpty) continue;
+      final geoPolys = _buildingPolygons[pin.id];
+      if (geoPolys == null || geoPolys.isEmpty) continue;
       try {
-        final screenPoly = <Offset>[];
-        for (final pt in geoPoly) {
-          final sc = await _map!.pixelForCoordinate(
-            Point(coordinates: Position(pt[0], pt[1])),
-          );
-          screenPoly.add(Offset(sc.x, sc.y));
+        // 도로 위 모든 건물 폴리곤 변환
+        for (final geoPoly in geoPolys) {
+          final screenPoly = <Offset>[];
+          for (final pt in geoPoly) {
+            final sc = await _map!.pixelForCoordinate(
+              Point(coordinates: Position(pt[0], pt[1])),
+            );
+            screenPoly.add(Offset(sc.x, sc.y));
+          }
+          if (screenPoly.length >= 3) polys.add(screenPoly);
         }
-        polys.add(screenPoly);
         final cc = await _map!.pixelForCoordinate(
           Point(coordinates: Position(pin.lng, pin.lat)),
         );
@@ -596,9 +587,9 @@ class MapScreenState extends State<MapScreen>
         MapAnimationOptions(duration: 1800),
       );
 
-      final polygon = await _queryBuildingPolygon(
+      final polygons = await _queryStreetBuildings(
           gpsPos.latitude, gpsPos.longitude);
-      _buildingPolygons[pin.id] = polygon;
+      _buildingPolygons[pin.id] = polygons;
       await _savePolygons();
       await _updateFogPositions();
     } catch (e) {
