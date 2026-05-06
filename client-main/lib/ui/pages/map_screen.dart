@@ -407,10 +407,12 @@ out geom;
               'interpolate',
               ['linear'],
               ['zoom'],
-              15, 0,
-              15.05, ['get', 'height']
+              14, 0,
+              14.5, ['*', ['number', ['get', 'height'], 10], 3]
             ],
-            'fill-extrusion-base': ['get', 'min_height'],
+            'fill-extrusion-base': [
+              '*', ['number', ['get', 'min_height'], 0], 3
+            ],
             'fill-extrusion-opacity': 0.9,
           }
         }),
