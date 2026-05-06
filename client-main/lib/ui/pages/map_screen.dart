@@ -55,8 +55,11 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => MapScreenState();
 }
 
+// ignore: deprecated_member_use
 class MapScreenState extends State<MapScreen>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin
+    // ignore: deprecated_member_use
+    implements OnPointAnnotationClickListener {
   static const String _prefsKey = 'capsule_pins';
   static const String _polygonsKey = 'capsule_polygons_v11';
   static const String _styleUri = 'mapbox://styles/mapbox/streets-v12';
@@ -88,14 +91,17 @@ class MapScreenState extends State<MapScreen>
     super.dispose();
   }
 
-  void _onAnnotationTap(PointAnnotation annotation) {
+  @override
+  // ignore: deprecated_member_use
+  bool onPointAnnotationClick(PointAnnotation annotation) {
     final pinId = _annotationIdToPinId[annotation.id];
-    if (pinId == null || pinId.isEmpty) return;
+    if (pinId == null || pinId.isEmpty) return true;
     final p = _pins.firstWhere(
       (p) => p.id == pinId,
       orElse: () => CapsulePin(id: '', lat: 0, lng: 0, title: ''),
     );
     if (p.id.isNotEmpty) _showPinSheet(p);
+    return true;
   }
 
   // ── Overpass / polygon helpers ────────────────────────────
@@ -386,7 +392,8 @@ out geom;
     _mapboxMap = mapboxMap;
     _annotationManager =
         await _mapboxMap!.annotations.createPointAnnotationManager();
-    _annotationManager!.tapEvents.listen(_onAnnotationTap);
+    // ignore: deprecated_member_use
+    _annotationManager!.addOnPointAnnotationClickListener(this);
     await _moveToMyLocation();
     _startTracking();
     await _onStyleLoaded();
