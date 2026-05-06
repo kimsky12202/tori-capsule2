@@ -8,7 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
-import 'dart:ui' show ImageByteFormat, PictureRecorder;
+import 'dart:ui' as ui;
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:math' as math;
@@ -312,22 +312,90 @@ out geom;
     };
   }
 
-  // ignore: unused_element
+  // 구름 텍스처 이미지 생성 (512x512, 뭉게구름 모양)
+  Future<Uint8List> _generateCloudTexture() async {
+    const int sz = 512;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, sz.toDouble(), sz.toDouble()));
+
+    // 반투명 안개 베이스
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, sz.toDouble(), sz.toDouble()),
+      Paint()..color = const Color(0x99E8ECF0),
+    );
+
+    // 뭉게구름 덩어리들 (고정 위치 - 타일링 시 균등 분포)
+    final clouds = [
+      (0.12, 0.18, 70.0), (0.42, 0.10, 55.0), (0.78, 0.22, 65.0),
+      (0.25, 0.50, 60.0), (0.62, 0.45, 75.0), (0.90, 0.55, 50.0),
+      (0.08, 0.75, 58.0), (0.48, 0.78, 68.0), (0.82, 0.82, 52.0),
+      // 타일 경계 연결용 (가장자리)
+      (0.0,  0.35, 45.0), (1.0,  0.35, 45.0),
+      (0.35, 0.0,  45.0), (0.35, 1.0,  45.0),
+    ];
+
+    for (final (rx, ry, r) in clouds) {
+      final cx = rx * sz;
+      final cy = ry * sz;
+      // 구름 그림자
+      canvas.drawCircle(
+        Offset(cx + 4, cy + 6),
+        r,
+        Paint()
+          ..color = const Color(0x22B0B8C4)
+          ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, r * 0.5),
+      );
+      // 구름 본체
+      canvas.drawCircle(
+        Offset(cx, cy),
+        r,
+        Paint()
+          ..color = const Color(0xDDFFFFFF)
+          ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, r * 0.3),
+      );
+      // 위쪽 하이라이트
+      canvas.drawCircle(
+        Offset(cx - r * 0.2, cy - r * 0.2),
+        r * 0.55,
+        Paint()
+          ..color = const Color(0x55FFFFFF)
+          ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, r * 0.2),
+      );
+    }
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(sz, sz);
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    return byteData!.buffer.asUint8List();
+  }
+
   Future<void> _addFogLayer() async {
     if (_map == null) return;
     try {
+      // 구름 텍스처 생성 후 맵에 등록
+      final texBytes = await _generateCloudTexture();
+      await _map!.addImage('cloud-tex', texBytes);
+
       final geoJson = _buildFogGeoJson();
       await _map!.addGeoJsonSource('fog-source', geoJson);
-      // 흰색 반투명 안개 레이어 (지도 위에 고정)
+
+      // 레이어 1: 안개 베이스 (반투명 회백색)
       await _map!.addLayer(
-        'fog-source',
-        'fog-fill',
-        FillLayerProperties(
-          fillColor: '#FFFFFF',
-          fillOpacity: 0.82,
-          fillAntialias: true,
+        'fog-source', 'fog-base',
+        const FillLayerProperties(
+          fillColor: '#DDE3E8',
+          fillOpacity: 0.55,
         ),
       );
+      // 레이어 2: 구름 텍스처 패턴
+      await _map!.addLayer(
+        'fog-source', 'fog-cloud',
+        const FillLayerProperties(
+          fillPattern: 'cloud-tex',
+          fillOpacity: 0.90,
+        ),
+      );
+
       _fogLayerAdded = true;
     } catch (e) {
       debugPrint('안개 레이어 추가 오류: $e');
@@ -414,9 +482,8 @@ out geom;
   Future<void> _onStyleLoaded() async {
     await _refineBaseStyle();
     await _add3DBuildings();
-    // 안개 임시 비활성화
-    // await _addFogLayer();
-    // if (_pins.isNotEmpty) await _refreshFogLayer();
+    await _addFogLayer();
+    if (_pins.isNotEmpty) await _refreshFogLayer();
   }
 
   Future<void> _refineBaseStyle() async {
@@ -515,12 +582,12 @@ out geom;
   }
 
   Future<Uint8List> _makeDotImage({required Color color}) async {
-    final rec = PictureRecorder();
+    final rec = ui.PictureRecorder();
     final c = Canvas(rec, const Rect.fromLTWH(0, 0, 40, 40));
     c.drawCircle(const Offset(20, 20), 18, Paint()..color = Colors.white);
     c.drawCircle(const Offset(20, 20), 13, Paint()..color = color);
     final img = await rec.endRecording().toImage(40, 40);
-    final d = await img.toByteData(format: ImageByteFormat.png);
+    final d = await img.toByteData(format: ui.ImageByteFormat.png);
     return d!.buffer.asUint8List();
   }
 
@@ -623,7 +690,7 @@ out geom;
 
     final image = await decodeImageFromList(bytes);
     const double sz = 140, pad = 10;
-    final rec = PictureRecorder();
+    final rec = ui.PictureRecorder();
     final c = Canvas(rec, Rect.fromLTWH(0, 0, sz, sz + 20));
 
     final tail = Path()
@@ -668,7 +735,7 @@ out geom;
 
     final out =
         await rec.endRecording().toImage(sz.toInt(), (sz + 20).toInt());
-    final d = await out.toByteData(format: ImageByteFormat.png);
+    final d = await out.toByteData(format: ui.ImageByteFormat.png);
     return d!.buffer.asUint8List();
   }
 
