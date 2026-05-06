@@ -6,7 +6,6 @@ import 'package:exif/exif.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
-import 'fog_painter.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:ui' show ImageByteFormat, PictureRecorder;
@@ -60,9 +59,9 @@ class MapScreenState extends State<MapScreen>
   static const String _prefsKey = 'capsule_pins';
   static const String _polygonsKey = 'capsule_polygons_v11';
 
-  // OpenFreeMap positron - 깔끔한 밝은 배경
+  // OpenFreeMap bright - 색깔 있는 배경 (도로/공원/물 색상)
   static const String _styleUrl =
-      'https://tiles.openfreemap.org/styles/positron';
+      'https://tiles.openfreemap.org/styles/bright';
 
   MapLibreMapController? _map;
   Symbol? _myLocSymbol;
@@ -73,8 +72,7 @@ class MapScreenState extends State<MapScreen>
   final img_picker.ImagePicker _picker = img_picker.ImagePicker();
   StreamSubscription<geo.Position>? _posSub;
 
-  List<List<Offset>> _fogPolygons = [];
-  List<Offset> _fogCenters = [];
+  bool _fogLayerAdded = false;
   bool _isLoading = false;
 
   @override
@@ -84,7 +82,6 @@ class MapScreenState extends State<MapScreen>
   void dispose() {
     _posSub?.cancel();
     _map?.onSymbolTapped.remove(_onSymbolTapped);
-    _map?.removeListener(_onCameraChanged);
     super.dispose();
   }
 
@@ -270,34 +267,79 @@ out geom;
     } catch (_) {}
   }
 
-  // ── 안개 화면 좌표 업데이트 ──────────────────────────────
-  Future<void> _updateFogPositions() async {
-    if (_map == null || !mounted) return;
-    final polys = <List<Offset>>[];
-    final centers = <Offset>[];
+  // ── 안개를 MapLibre 네이티브 GeoJSON 레이어로 관리 ──────────
+  // 지도에 고정되어 카메라 이동과 관계없이 항상 올바른 위치에 표시됨
+
+  Map<String, dynamic> _buildFogGeoJson() {
+    // 외곽 링: 전 세계를 덮는 큰 사각형
+    final outerRing = [
+      [-180.0, -85.051129],
+      [180.0, -85.051129],
+      [180.0, 85.051129],
+      [-180.0, 85.051129],
+      [-180.0, -85.051129],
+    ];
+
+    final coordinates = <List<List<double>>>[outerRing];
+
+    // 내부 링(구멍): 걷힌 구역들
     for (final pin in _pins) {
       final geoPolys = _buildingPolygons[pin.id];
-      if (geoPolys == null || geoPolys.isEmpty) continue;
-      try {
-        for (final geoPoly in geoPolys) {
-          final screenPoly = <Offset>[];
-          for (final pt in geoPoly) {
-            final sc = await _map!
-                .toScreenLocation(LatLng(pt[1], pt[0]));
-            screenPoly.add(Offset(sc.x.toDouble(), sc.y.toDouble()));
-          }
-          if (screenPoly.length >= 3) polys.add(screenPoly);
+      if (geoPolys == null) continue;
+      for (final geoPoly in geoPolys) {
+        if (geoPoly.length < 3) continue;
+        final ring = geoPoly.map((pt) => [pt[0], pt[1]]).toList();
+        // GeoJSON 구멍은 닫혀 있어야 함
+        if (ring.first[0] != ring.last[0] || ring.first[1] != ring.last[1]) {
+          ring.add(ring.first);
         }
-        final cc =
-            await _map!.toScreenLocation(LatLng(pin.lat, pin.lng));
-        centers.add(Offset(cc.x.toDouble(), cc.y.toDouble()));
-      } catch (_) {}
+        coordinates.add(ring);
+      }
     }
-    if (mounted) {
-      setState(() {
-        _fogPolygons = polys;
-        _fogCenters = centers;
-      });
+
+    return {
+      'type': 'FeatureCollection',
+      'features': [
+        {
+          'type': 'Feature',
+          'geometry': {
+            'type': 'Polygon',
+            'coordinates': coordinates,
+          },
+          'properties': {},
+        }
+      ],
+    };
+  }
+
+  Future<void> _addFogLayer() async {
+    if (_map == null) return;
+    try {
+      final geoJson = _buildFogGeoJson();
+      await _map!.addGeoJsonSource('fog-source', geoJson);
+      // 흰색 반투명 안개 레이어 (지도 위에 고정)
+      await _map!.addLayer(
+        'fog-source',
+        'fog-fill',
+        FillLayerProperties(
+          fillColor: '#FFFFFF',
+          fillOpacity: 0.82,
+          fillAntialias: true,
+        ),
+      );
+      _fogLayerAdded = true;
+    } catch (e) {
+      debugPrint('안개 레이어 추가 오류: $e');
+    }
+  }
+
+  Future<void> _refreshFogLayer() async {
+    if (_map == null || !_fogLayerAdded) return;
+    try {
+      final geoJson = _buildFogGeoJson();
+      await _map!.setGeoJsonSource('fog-source', geoJson);
+    } catch (e) {
+      debugPrint('안개 레이어 업데이트 오류: $e');
     }
   }
 
@@ -323,7 +365,7 @@ out geom;
         }
       } catch (_) {}
     }
-    await _updateFogPositions();
+    await _refreshFogLayer();
   }
 
   Future<void> _addMarkerToMap(CapsulePin pin) async {
@@ -363,21 +405,17 @@ out geom;
   Future<void> _onMapCreated(MapLibreMapController map) async {
     _map = map;
     map.onSymbolTapped.add(_onSymbolTapped);
-    // 카메라 이동 시마다 안개 위치 업데이트 (구름이 지도를 따라감)
-    map.addListener(_onCameraChanged);
     await _moveToMyLocation();
     _startTracking();
     await _loadPins();
   }
 
-  void _onCameraChanged() {
-    _updateFogPositions();
-  }
-
   Future<void> _onStyleLoaded() async {
     await _refineBaseStyle();
     await _add3DBuildings();
-    await _updateFogPositions();
+    await _addFogLayer();
+    // 이미 핀이 로드된 경우(스타일 재로드) 안개 갱신
+    if (_pins.isNotEmpty) await _refreshFogLayer();
   }
 
   Future<void> _refineBaseStyle() async {
@@ -697,7 +735,7 @@ out geom;
           await _queryStreetBuildings(gpsPos.latitude, gpsPos.longitude);
       _buildingPolygons[pin.id] = polygons;
       await _savePolygons();
-      await _updateFogPositions();
+      await _refreshFogLayer();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -778,20 +816,8 @@ out geom;
             ),
             onMapCreated: _onMapCreated,
             onStyleLoadedCallback: _onStyleLoaded,
-            onCameraIdle: _updateFogPositions,
             myLocationEnabled: false,
             trackCameraPosition: true,
-          ),
-          // 안개 오버레이
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: GradientFogPainter(
-                  polygons: _fogPolygons,
-                  centers: _fogCenters,
-                ),
-              ),
-            ),
           ),
           if (_isLoading)
             Container(
