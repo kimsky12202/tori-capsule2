@@ -312,32 +312,77 @@ out geom;
     };
   }
 
+  // 뭉게구름 텍스처 생성 (blur 없이 단순 원 합성)
+  Future<Uint8List> _generateCloudTexture() async {
+    const int sz = 512;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    // 반투명 베이스 (안개 배경)
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, sz.toDouble(), sz.toDouble()),
+      Paint()..color = const Color(0xA0D8E4EC),
+    );
+
+    // 구름 본체 색 (흰색에 가까운 밝은 회청색)
+    final cloudPaint = Paint()..color = const Color(0xD0F0F4F8);
+    // 구름 하이라이트 (더 밝은 중심부)
+    final highlightPaint = Paint()..color = const Color(0xE8FAFCFF);
+    // 구름 그림자 (약간 어두운 하단)
+    final shadowPaint = Paint()..color = const Color(0x60B8C8D4);
+
+    // 구름 위치 (x, y, 반지름) - 타일링 시 자연스럽게 이어지도록 설계
+    final clouds = [
+      // 메인 구름들
+      (0.15, 0.20, 72.0), (0.50, 0.12, 58.0), (0.82, 0.25, 65.0),
+      (0.28, 0.55, 68.0), (0.68, 0.50, 74.0),
+      (0.10, 0.80, 55.0), (0.48, 0.82, 62.0), (0.85, 0.78, 58.0),
+      // 타일 경계 이음매
+      (0.0,  0.40, 50.0), (1.0,  0.40, 50.0),
+      (0.38, 0.0,  48.0), (0.38, 1.0,  48.0),
+      (0.75, 0.0,  44.0), (0.75, 1.0,  44.0),
+    ];
+
+    for (final (rx, ry, r) in clouds) {
+      final cx = rx * sz;
+      final cy = ry * sz;
+      // 그림자 (살짝 아래)
+      canvas.drawCircle(Offset(cx + 5, cy + 8), r * 0.85, shadowPaint);
+      // 구름 본체 (여러 원 겹쳐서 뭉게 모양)
+      canvas.drawCircle(Offset(cx, cy), r, cloudPaint);
+      canvas.drawCircle(Offset(cx - r * 0.4, cy + r * 0.1), r * 0.72, cloudPaint);
+      canvas.drawCircle(Offset(cx + r * 0.42, cy + r * 0.08), r * 0.68, cloudPaint);
+      canvas.drawCircle(Offset(cx - r * 0.18, cy - r * 0.22), r * 0.58, cloudPaint);
+      canvas.drawCircle(Offset(cx + r * 0.20, cy - r * 0.18), r * 0.54, cloudPaint);
+      // 하이라이트 (구름 위쪽 밝게)
+      canvas.drawCircle(Offset(cx - r * 0.1, cy - r * 0.15), r * 0.45, highlightPaint);
+    }
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(sz, sz);
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    return byteData!.buffer.asUint8List();
+  }
+
   Future<void> _addFogLayer() async {
     if (_map == null) return;
     try {
+      // 구름 텍스처 등록
+      final texBytes = await _generateCloudTexture();
+      await _map!.addImage('cloud-tex', texBytes);
+
       final geoJson = _buildFogGeoJson();
       await _map!.addGeoJsonSource('fog-source', geoJson);
 
-      // 레이어 1: 짙은 안개 베이스
+      // 구름 텍스처 패턴 레이어
       await _map!.addLayer(
-        'fog-source', 'fog-base',
-        const FillLayerProperties(
-          fillColor: '#C8D4DC',
-          fillOpacity: 0.72,
-        ),
-      );
-      // 레이어 2: 밝은 구름빛 덧칠 (위쪽이 밝아 보이는 효과)
-      await _map!.addLayer(
-        'fog-source', 'fog-light',
-        const FillLayerProperties(
-          fillColor: '#EEF2F5',
-          fillOpacity: 0.45,
-        ),
+        'fog-source', 'fog-cloud',
+        const FillLayerProperties(fillPattern: 'cloud-tex'),
       );
 
       _fogLayerAdded = true;
     } catch (e) {
-      debugPrint('안개 레이어 추가 오류: $e');
+      debugPrint('안개 레이어 오류: $e');
     }
   }
 
