@@ -64,7 +64,7 @@ class MapScreenState extends State<MapScreen>
   static const String _styleUrl =
       'https://tiles.openfreemap.org/styles/positron';
 
-  MaplibreMapController? _map;
+  MapLibreMapController? _map;
   Symbol? _myLocSymbol;
   final Map<String, Symbol> _symbolMap = {};
 
@@ -359,7 +359,7 @@ out geom;
   }
 
   // ── 지도 초기화 ───────────────────────────────────────────
-  Future<void> _onMapCreated(MaplibreMapController map) async {
+  Future<void> _onMapCreated(MapLibreMapController map) async {
     _map = map;
     map.onSymbolTapped.add(_onSymbolTapped);
     await _moveToMyLocation();
@@ -430,7 +430,6 @@ out geom;
             15, 0.85
           ],
         ),
-        layerId: 'building-3d-custom',
       );
     } catch (e) {
       debugPrint('3D 건물 레이어 오류: $e');
@@ -773,7 +772,7 @@ out geom;
     return Scaffold(
       body: Stack(
         children: [
-          MaplibreMap(
+          MapLibreMap(
             styleString: _styleUrl,
             initialCameraPosition: const CameraPosition(
               target: LatLng(36.4800, 127.2890),
