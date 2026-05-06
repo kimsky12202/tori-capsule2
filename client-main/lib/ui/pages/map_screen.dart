@@ -783,17 +783,17 @@ out geom;
             onStyleLoadedListener: _onStyleLoaded,
             onCameraChangeListener: (_) => _updateFogPositions(),
           ),
-          // 그라데이션 안개 오버레이
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: GradientFogPainter(
-                  polygons: _fogPolygons,
-                  centers: _fogCenters,
-                ),
-              ),
-            ),
-          ),
+          // 안개 오버레이 (임시 비활성화)
+          // Positioned.fill(
+          //   child: IgnorePointer(
+          //     child: CustomPaint(
+          //       painter: GradientFogPainter(
+          //         polygons: _fogPolygons,
+          //         centers: _fogCenters,
+          //       ),
+          //     ),
+          //   ),
+          // ),
           if (_isLoading)
             Container(
               color: Colors.black26,
