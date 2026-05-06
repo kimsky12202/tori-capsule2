@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
 
 class GradientFogPainter extends CustomPainter {
@@ -13,94 +14,112 @@ class GradientFogPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final bounds = Rect.fromLTWH(0, 0, size.width, size.height);
 
-    // ── 1. 안개 경로 계산 (전체 화면 - 걷힌 구역) ─────────
-    Path fogPath = Path()..addRect(bounds);
+    // ── 1. 걷힌 구역 경로 계산 ─────────────────────────────
+    Path clearedPath = Path();
     for (final poly in polygons) {
       if (poly.length < 3) continue;
       final p = Path();
       p.moveTo(poly.first.dx, poly.first.dy);
-      for (final pt in poly.skip(1)) {
-        p.lineTo(pt.dx, pt.dy);
-      }
+      for (final pt in poly.skip(1)) p.lineTo(pt.dx, pt.dy);
       p.close();
-      fogPath = Path.combine(PathOperation.difference, fogPath, p);
+      clearedPath = Path.combine(PathOperation.union, clearedPath, p);
     }
 
-    // ── 2. 짙은 안개 기층 (불투명 베이스) ─────────────────
-    canvas.drawPath(
-      fogPath,
-      Paint()..color = const Color(0xC4AABECE),
+    // 안개 경로 = 전체 - 걷힌 구역
+    Path fogPath = Path.combine(
+      PathOperation.difference,
+      Path()..addRect(bounds),
+      clearedPath,
     );
 
-    // ── 3. 블러된 안개 레이어 (경계가 서서히 흐려짐) ───────
-    // 동일한 fogPath를 블러처리 → 안개 경계가 실제 안개처럼 번짐
+    // ── 2. saveLayer로 구름 레이어 시작 ──────────────────────
+    canvas.saveLayer(bounds, Paint());
+
+    // ── 3. 구름 베이스 (흰색 불투명) ────────────────────────
+    canvas.drawPath(
+      fogPath,
+      Paint()..color = const Color(0xDDFFFFFF),
+    );
+
+    // ── 4. 구름 뭉게 질감 - 격자형 원형 덩어리들 ──────────────
+    // 화면을 격자로 나눠 각 셀에 구름 덩어리 배치
+    final rng = _SeededRng(42);
+    final cellW = size.width / 5;
+    final cellH = size.height / 7;
+
+    for (int row = 0; row < 7; row++) {
+      for (int col = 0; col < 5; col++) {
+        final cx = cellW * col + cellW * (0.3 + rng.next() * 0.4);
+        final cy = cellH * row + cellH * (0.3 + rng.next() * 0.4);
+        final r = cellW * (0.55 + rng.next() * 0.35);
+
+        // 해당 점이 걷힌 영역에 있으면 스킵
+        if (clearedPath.contains(Offset(cx, cy))) continue;
+
+        // 큰 구름 덩어리
+        canvas.drawCircle(
+          Offset(cx, cy),
+          r,
+          Paint()
+            ..color = const Color(0xCCFFFFFF)
+            ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.4),
+        );
+
+        // 위쪽 밝은 하이라이트
+        canvas.drawCircle(
+          Offset(cx - r * 0.15, cy - r * 0.2),
+          r * 0.6,
+          Paint()
+            ..color = const Color(0x88FFFFFF)
+            ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.25),
+        );
+      }
+    }
+
+    // ── 5. 구름 그림자 (하단 약간 어두움) ────────────────────
+    final shadowPath = Path.combine(
+      PathOperation.difference,
+      Path()..addRect(bounds),
+      clearedPath,
+    );
+    canvas.drawPath(
+      shadowPath,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            const Color(0x00D0D8E0),
+            const Color(0x28B8C4CC),
+          ],
+        ).createShader(bounds),
+    );
+
+    // ── 6. 구름 경계 블러 (걷힌 경계 부드럽게) ─────────────
     canvas.drawPath(
       fogPath,
       Paint()
-        ..color = const Color(0x60A0B8CC)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18),
+        ..color = const Color(0x55FFFFFF)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 22),
     );
 
-    // ── 4. 두 번째 넓은 블러 (더 멀리 퍼지는 안개 끝자락) ─
-    canvas.drawPath(
-      fogPath,
-      Paint()
-        ..color = const Color(0x30A0B8CC)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 40),
-    );
+    canvas.restore();
 
-    // ── 5. 전체 대기 Haze ────────────────────────────────
-    // 걷힌 곳도 살짝 뿌옇게 → 실제 안개처럼 완전히 맑지 않음
-    canvas.drawRect(
-      bounds,
-      Paint()..color = const Color(0x14A0B8D0),
-    );
-
-    // ── 6. 안개 내부 밀도 변화 (불균일한 질감) ────────────
-    // 화면 4구석에 큰 뭉게구름 느낌 추가
-    for (final spot in [
-      Offset(0, 0),
-      Offset(size.width, 0),
-      Offset(0, size.height),
-      Offset(size.width, size.height),
-      Offset(size.width * 0.5, 0),
-      Offset(0, size.height * 0.5),
-      Offset(size.width, size.height * 0.5),
-    ]) {
-      canvas.drawCircle(
-        spot,
-        size.width * 0.45,
-        Paint()
-          ..color = const Color(0x18B0C8DC)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 60),
-      );
-    }
-
-    // ── 7. 사진 위치 아침 햇살 글로우 ──────────────────────
+    // ── 7. 사진 위치 햇살 글로우 ──────────────────────────────
     for (final center in centers) {
-      // 바깥 넓은 빛 퍼짐
       canvas.drawCircle(
         center,
-        110,
+        120,
         Paint()
-          ..color = const Color(0x20FFA040)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 60),
+          ..color = const Color(0x18FFE080)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 55),
       );
-      // 중간 빛
       canvas.drawCircle(
         center,
-        55,
+        50,
         Paint()
-          ..color = const Color(0x28FFB850)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 30),
-      );
-      // 중심 밝은 점
-      canvas.drawCircle(
-        center,
-        20,
-        Paint()
-          ..color = const Color(0x35FFD080)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12),
+          ..color = const Color(0x22FFD060)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 25),
       );
     }
   }
@@ -108,4 +127,15 @@ class GradientFogPainter extends CustomPainter {
   @override
   bool shouldRepaint(GradientFogPainter old) =>
       old.polygons != polygons || old.centers != centers;
+}
+
+// 결정론적 난수 (seed 고정 → 매번 같은 구름 위치)
+class _SeededRng {
+  int _state;
+  _SeededRng(this._state);
+
+  double next() {
+    _state = (_state * 1664525 + 1013904223) & 0xFFFFFFFF;
+    return (_state & 0xFFFF) / 0xFFFF;
+  }
 }
