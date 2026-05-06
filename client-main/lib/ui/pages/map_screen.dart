@@ -314,6 +314,7 @@ out geom;
     };
   }
 
+  // ignore: unused_element
   Future<void> _addFogLayer() async {
     if (_map == null) return;
     try {
@@ -810,7 +811,6 @@ out geom;
         children: [
           MapLibreMap(
             styleString: _styleUrl,
-            accessToken: _mapboxToken,
             initialCameraPosition: const CameraPosition(
               target: LatLng(36.4800, 127.2890),
               zoom: 6.0,

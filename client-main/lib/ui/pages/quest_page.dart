@@ -50,7 +50,6 @@ class QuestPage extends StatelessWidget {
   Widget build(BuildContext context) {
     const Color textColor = Color(0xFF2E2B2A);
     const Color textLightColor = Color(0xFF7A756D);
-    const Color pointRedColor = Color(0xFFA14040);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF4F1EA),

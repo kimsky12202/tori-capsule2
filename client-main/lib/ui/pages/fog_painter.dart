@@ -37,7 +37,7 @@ class GradientFogPainter extends CustomPainter {
       if (poly.length < 3) continue;
       final p = Path();
       p.moveTo(poly.first.dx, poly.first.dy);
-      for (final pt in poly.skip(1)) p.lineTo(pt.dx, pt.dy);
+      for (final pt in poly.skip(1)) { p.lineTo(pt.dx, pt.dy); }
       p.close();
       clearedPath = Path.combine(PathOperation.union, clearedPath, p);
     }
