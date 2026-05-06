@@ -408,10 +408,10 @@ out geom;
               ['linear'],
               ['zoom'],
               14, 0,
-              14.5, ['*', ['number', ['get', 'height'], 10], 3]
+              14.5, ['*', ['number', ['get', 'height'], 10], 2]
             ],
             'fill-extrusion-base': [
-              '*', ['number', ['get', 'min_height'], 0], 3
+              '*', ['number', ['get', 'min_height'], 0], 2
             ],
             'fill-extrusion-opacity': 0.9,
           }
