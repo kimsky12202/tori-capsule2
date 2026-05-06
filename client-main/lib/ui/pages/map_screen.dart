@@ -56,8 +56,7 @@ class MapScreen extends StatefulWidget {
 }
 
 class MapScreenState extends State<MapScreen>
-    with AutomaticKeepAliveClientMixin
-    implements OnPointAnnotationClickListener {
+    with AutomaticKeepAliveClientMixin {
   static const String _prefsKey = 'capsule_pins';
   static const String _polygonsKey = 'capsule_polygons_v11';
   static const String _styleUri = 'mapbox://styles/mapbox/streets-v12';
@@ -89,17 +88,14 @@ class MapScreenState extends State<MapScreen>
     super.dispose();
   }
 
-  // ── OnPointAnnotationClickListener ───────────────────────
-  @override
-  bool onPointAnnotationClick(PointAnnotation annotation) {
+  void _onAnnotationTap(PointAnnotation annotation) {
     final pinId = _annotationIdToPinId[annotation.id];
-    if (pinId == null || pinId.isEmpty) return true;
+    if (pinId == null || pinId.isEmpty) return;
     final p = _pins.firstWhere(
       (p) => p.id == pinId,
       orElse: () => CapsulePin(id: '', lat: 0, lng: 0, title: ''),
     );
     if (p.id.isNotEmpty) _showPinSheet(p);
-    return true;
   }
 
   // ── Overpass / polygon helpers ────────────────────────────
@@ -382,18 +378,15 @@ out geom;
       ),
     );
     _annotationMap[pin.id] = annotation;
-    if (annotation.id != null) {
-      _annotationIdToPinId[annotation.id!] = pin.id;
-    }
+    _annotationIdToPinId[annotation.id] = pin.id;
   }
 
   // ── Map init ──────────────────────────────────────────────
   Future<void> _onMapCreated(MapboxMap mapboxMap) async {
     _mapboxMap = mapboxMap;
-    _mapboxMap!.setOnCameraChangeListener((_) => _updateFogPositions());
     _annotationManager =
         await _mapboxMap!.annotations.createPointAnnotationManager();
-    _annotationManager!.addOnPointAnnotationClickListener(this);
+    _annotationManager!.tapEvents.listen(_onAnnotationTap);
     await _moveToMyLocation();
     _startTracking();
     await _onStyleLoaded();
@@ -506,15 +499,9 @@ out geom;
     if (_mapboxMap == null || _annotationManager == null) return;
     final dotImg = await _makeDotImage(color: const Color(0xFF4A90E2));
     if (_myLocAnnotation != null) {
-      final updated = _myLocAnnotation!.copyWith(
-        PointAnnotationOptions(
-          geometry: Point(coordinates: Position(lng, lat)),
-          image: dotImg,
-          iconSize: 1.0,
-        ),
-      );
-      await _annotationManager!.update(updated);
-      _myLocAnnotation = updated;
+      _myLocAnnotation!.geometry = Point(coordinates: Position(lng, lat));
+      _myLocAnnotation!.image = dotImg;
+      await _annotationManager!.update(_myLocAnnotation!);
     } else {
       _myLocAnnotation = await _annotationManager!.create(
         PointAnnotationOptions(
@@ -638,9 +625,9 @@ out geom;
 
     c.save();
     c.translate(sz / 2, sz / 2);
-    if (orientation == 3) c.rotate(math.pi);
-    else if (orientation == 6) c.rotate(math.pi / 2);
-    else if (orientation == 8) c.rotate(-math.pi / 2);
+    if (orientation == 3) { c.rotate(math.pi); }
+    else if (orientation == 6) { c.rotate(math.pi / 2); }
+    else if (orientation == 8) { c.rotate(-math.pi / 2); }
     c.translate(-sz / 2, -sz / 2);
 
     final sw = image.width.toDouble(), sh = image.height.toDouble();
@@ -792,12 +779,8 @@ out geom;
           MapWidget(
             key: const ValueKey('map'),
             styleUri: _styleUri,
-            cameraOptions: CameraOptions(
-              center: Point(coordinates: Position(127.2890, 36.4800)),
-              zoom: 6.0,
-              pitch: 45.0,
-            ),
             onMapCreated: _onMapCreated,
+            onCameraChangeListener: (_) => _updateFogPositions(),
           ),
           Positioned.fill(
             child: IgnorePointer(
