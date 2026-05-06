@@ -27,10 +27,10 @@ class GradientFogPainter extends CustomPainter {
       fogPath = Path.combine(PathOperation.difference, fogPath, buildingPath);
     }
 
-    // 안개 그리기 - 밝은 맵 위 회청색 안개
+    // 안개 그리기 - positron 밝은 맵 위 부드러운 청회색
     canvas.drawPath(
       fogPath,
-      Paint()..color = const Color(0xC8B8C8D8),
+      Paint()..color = const Color(0xBEB8C8DC),
     );
 
     // 아침 햇살 글로우 (사진 위치 중심)

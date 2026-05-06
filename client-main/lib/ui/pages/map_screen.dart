@@ -60,9 +60,9 @@ class MapScreenState extends State<MapScreen>
   static const String _prefsKey = 'capsule_pins';
   static const String _polygonsKey = 'capsule_polygons_v11';
 
-  // OpenFreeMap - 무료, 가입 불필요
+  // OpenFreeMap positron - 깔끔한 밝은 배경
   static const String _styleUrl =
-      'https://tiles.openfreemap.org/styles/liberty';
+      'https://tiles.openfreemap.org/styles/positron';
 
   MaplibreMapController? _map;
   Symbol? _myLocSymbol;
@@ -368,38 +368,69 @@ out geom;
   }
 
   Future<void> _onStyleLoaded() async {
+    await _refineBaseStyle();
     await _add3DBuildings();
     await _updateFogPositions();
+  }
+
+  Future<void> _refineBaseStyle() async {
+    if (_map == null) return;
+    // 기존 2D 건물 레이어 숨기기 (3D로 대체)
+    for (final id in ['building', 'building-top', 'building-outline',
+                       'building-3d', 'building-fill']) {
+      try {
+        await _map!.setLayerProperties(
+            id, const FillLayerProperties(fillOpacity: 0));
+      } catch (_) {}
+      try {
+        await _map!.setLayerProperties(
+            id, const LineLayerProperties(lineOpacity: 0));
+      } catch (_) {}
+    }
+    // 물 색상 - 부드러운 파란색
+    for (final id in ['water', 'water-polygon']) {
+      try {
+        await _map!.setLayerProperties(
+            id, const FillLayerProperties(fillColor: '#A8C8DC'));
+      } catch (_) {}
+    }
   }
 
   Future<void> _add3DBuildings() async {
     if (_map == null) return;
     try {
-      // OpenFreeMap liberty 스타일 기준 (OpenMapTiles 스키마)
-      // 소스: openmaptiles, 소스레이어: building
-      // 높이 속성: render_height / render_min_height
       await _map!.addLayer(
         'openmaptiles',
         'building',
         FillExtrusionLayerProperties(
+          // 줌 14부터 서서히 올라옴
           fillExtrusionHeight: [
-            'interpolate',
-            ['linear'],
-            ['zoom'],
-            14,
-            0,
-            14.5,
-            ['*', ['number', ['get', 'render_height'], 10], 2]
+            'interpolate', ['linear'], ['zoom'],
+            14, 0,
+            14.5, ['*', ['number', ['get', 'render_height'], 8], 2]
           ],
           fillExtrusionBase: [
-            '*',
-            ['number', ['get', 'render_min_height'], 0],
-            2
+            '*', ['number', ['get', 'render_min_height'], 0], 2
           ],
-          fillExtrusionColor: '#564848',
-          fillExtrusionOpacity: 0.9,
+          // 건물 용도별 색상 구분
+          fillExtrusionColor: [
+            'match', ['get', 'class'],
+            'residential',  '#5C4A4A',
+            'apartments',   '#5C4A4A',
+            'commercial',   '#3D4A5C',
+            'retail',       '#4A5060',
+            'industrial',   '#4A4A3C',
+            'public',       '#4A3D58',
+            'office',       '#3A4A5C',
+            '#504040'  // 기본
+          ],
+          fillExtrusionOpacity: [
+            'interpolate', ['linear'], ['zoom'],
+            14, 0.0,
+            15, 0.85
+          ],
         ),
-        layerId: 'building-3d',
+        layerId: 'building-3d-custom',
       );
     } catch (e) {
       debugPrint('3D 건물 레이어 오류: $e');
