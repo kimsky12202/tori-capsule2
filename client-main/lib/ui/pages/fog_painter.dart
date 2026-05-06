@@ -35,10 +35,10 @@ class GradientFogPainter extends CustomPainter {
     // ── 2. saveLayer로 구름 레이어 시작 ──────────────────────
     canvas.saveLayer(bounds, Paint());
 
-    // ── 3. 구름 베이스 (흰색 불투명) ────────────────────────
+    // ── 3. 구름 베이스 (흰색 반투명 - 지도가 비쳐 보임) ──────
     canvas.drawPath(
       fogPath,
-      Paint()..color = const Color(0xDDFFFFFF),
+      Paint()..color = const Color(0xBBFFFFFF),
     );
 
     // ── 4. 구름 뭉게 질감 - 격자형 원형 덩어리들 ──────────────
@@ -61,7 +61,7 @@ class GradientFogPainter extends CustomPainter {
           Offset(cx, cy),
           r,
           Paint()
-            ..color = const Color(0xCCFFFFFF)
+            ..color = const Color(0x99FFFFFF)
             ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.4),
         );
 
@@ -70,7 +70,7 @@ class GradientFogPainter extends CustomPainter {
           Offset(cx - r * 0.15, cy - r * 0.2),
           r * 0.6,
           Paint()
-            ..color = const Color(0x88FFFFFF)
+            ..color = const Color(0x55FFFFFF)
             ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.25),
         );
       }
@@ -99,7 +99,7 @@ class GradientFogPainter extends CustomPainter {
     canvas.drawPath(
       fogPath,
       Paint()
-        ..color = const Color(0x55FFFFFF)
+        ..color = const Color(0x33FFFFFF)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 22),
     );
 
