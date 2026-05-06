@@ -13,37 +13,27 @@ class GradientFogPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final bounds = Rect.fromLTWH(0, 0, size.width, size.height);
 
-    canvas.saveLayer(bounds, Paint());
+    // 안개 = 전체 화면에서 건물 폴리곤을 뺀 영역
+    Path fogPath = Path()..addRect(bounds);
 
-    // 아침 안개 - 연한 회청색 (지도 색과 대비 확보)
-    canvas.drawRect(
-      bounds,
+    for (final poly in polygons) {
+      if (poly.length < 3) continue;
+      final buildingPath = Path();
+      buildingPath.moveTo(poly.first.dx, poly.first.dy);
+      for (final pt in poly.skip(1)) {
+        buildingPath.lineTo(pt.dx, pt.dy);
+      }
+      buildingPath.close();
+      fogPath = Path.combine(PathOperation.difference, fogPath, buildingPath);
+    }
+
+    // 안개 그리기 (건물 영역은 구멍으로 제외됨)
+    canvas.drawPath(
+      fogPath,
       Paint()..color = const Color(0xD0C8D8E8),
     );
 
-    // 건물 모양대로 안개 걷힘
-    for (final poly in polygons) {
-      if (poly.length < 3) continue;
-
-      final path = Path();
-      path.moveTo(poly.first.dx, poly.first.dy);
-      for (final pt in poly.skip(1)) {
-        path.lineTo(pt.dx, pt.dy);
-      }
-      path.close();
-
-      // 내부 완전히 걷힘 (블러 없음 - 건물 경계 선명하게)
-      canvas.drawPath(
-        path,
-        Paint()
-          ..blendMode = BlendMode.dstOut
-          ..color = Colors.black,
-      );
-    }
-
-    canvas.restore();
-
-    // 아침 햇살 글로우
+    // 아침 햇살 글로우 (사진 위치 중심)
     for (final center in centers) {
       canvas.drawCircle(
         center,
