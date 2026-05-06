@@ -68,7 +68,7 @@ class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
   static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
-  static const String _polygonsKey = 'capsule_polygons_v9';
+  static const String _polygonsKey = 'capsule_polygons_v10';
 
   MapboxMap? _map;
   PointAnnotationManager? _pinManager;
@@ -113,7 +113,7 @@ class MapScreenState extends State<MapScreen>
 is_in($lat,$lng)->.a;
 (
   area.a["amenity"~"university|college|school|hospital|kindergarten"];
-  area.a["landuse"~"residential|commercial|retail|industrial"]["name"];
+  area.a["landuse"~"education|university|residential|commercial|retail|industrial"]["name"];
   area.a["building"~"apartments|university|hospital|school"];
 )->.zone;
 way["building"](area.zone);
@@ -122,12 +122,14 @@ out geom;
     final campusBuildings = await _fetchAllBuildings(campusQuery, tag: 'campus');
     if (campusBuildings.isNotEmpty) return campusBuildings;
 
-    // 2단계: 근처 500m 내 캠퍼스 area 찾아서 그 안에 현재 위치가 포함되면 사용
+    // 2단계: 근처 800m 내 캠퍼스 area - amenity/landuse=education 모두 포함
     final nearbyQuery = '''
 [out:json];
 (
-  way["amenity"~"university|college|school|hospital"](around:600,$lat,$lng);
-  relation["amenity"~"university|college|school|hospital"](around:600,$lat,$lng);
+  way["amenity"~"university|college|school|hospital"](around:800,$lat,$lng);
+  relation["amenity"~"university|college|school|hospital"](around:800,$lat,$lng);
+  way["landuse"~"education|university"](around:800,$lat,$lng);
+  relation["landuse"~"education|university"](around:800,$lat,$lng);
 )->.campus;
 map_to_area.campus->.campus_area;
 way["building"](area.campus_area);
