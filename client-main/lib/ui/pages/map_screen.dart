@@ -84,6 +84,7 @@ class MapScreenState extends State<MapScreen>
   void dispose() {
     _posSub?.cancel();
     _map?.onSymbolTapped.remove(_onSymbolTapped);
+    _map?.removeListener(_onCameraChanged);
     super.dispose();
   }
 
@@ -362,9 +363,15 @@ out geom;
   Future<void> _onMapCreated(MapLibreMapController map) async {
     _map = map;
     map.onSymbolTapped.add(_onSymbolTapped);
+    // 카메라 이동 시마다 안개 위치 업데이트 (구름이 지도를 따라감)
+    map.addListener(_onCameraChanged);
     await _moveToMyLocation();
     _startTracking();
     await _loadPins();
+  }
+
+  void _onCameraChanged() {
+    _updateFogPositions();
   }
 
   Future<void> _onStyleLoaded() async {
@@ -412,18 +419,8 @@ out geom;
           fillExtrusionBase: [
             '*', ['number', ['get', 'render_min_height'], 0], 2
           ],
-          // 건물 용도별 색상 구분
-          fillExtrusionColor: [
-            'match', ['get', 'class'],
-            'residential',  '#5C4A4A',
-            'apartments',   '#5C4A4A',
-            'commercial',   '#3D4A5C',
-            'retail',       '#4A5060',
-            'industrial',   '#4A4A3C',
-            'public',       '#4A3D58',
-            'office',       '#3A4A5C',
-            '#504040'  // 기본
-          ],
+          // 거의 검정에 가까운 짙은 색 (스크린샷 스타일)
+          fillExtrusionColor: '#2A2520',
           fillExtrusionOpacity: [
             'interpolate', ['linear'], ['zoom'],
             14, 0.0,
