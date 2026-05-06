@@ -312,87 +312,26 @@ out geom;
     };
   }
 
-  // 구름 텍스처 이미지 생성 (512x512, 뭉게구름 모양)
-  Future<Uint8List> _generateCloudTexture() async {
-    const int sz = 512;
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, sz.toDouble(), sz.toDouble()));
-
-    // 반투명 안개 베이스
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, sz.toDouble(), sz.toDouble()),
-      Paint()..color = const Color(0x99E8ECF0),
-    );
-
-    // 뭉게구름 덩어리들 (고정 위치 - 타일링 시 균등 분포)
-    final clouds = [
-      (0.12, 0.18, 70.0), (0.42, 0.10, 55.0), (0.78, 0.22, 65.0),
-      (0.25, 0.50, 60.0), (0.62, 0.45, 75.0), (0.90, 0.55, 50.0),
-      (0.08, 0.75, 58.0), (0.48, 0.78, 68.0), (0.82, 0.82, 52.0),
-      // 타일 경계 연결용 (가장자리)
-      (0.0,  0.35, 45.0), (1.0,  0.35, 45.0),
-      (0.35, 0.0,  45.0), (0.35, 1.0,  45.0),
-    ];
-
-    for (final (rx, ry, r) in clouds) {
-      final cx = rx * sz;
-      final cy = ry * sz;
-      // 구름 그림자
-      canvas.drawCircle(
-        Offset(cx + 4, cy + 6),
-        r,
-        Paint()
-          ..color = const Color(0x22B0B8C4)
-          ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, r * 0.5),
-      );
-      // 구름 본체
-      canvas.drawCircle(
-        Offset(cx, cy),
-        r,
-        Paint()
-          ..color = const Color(0xDDFFFFFF)
-          ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, r * 0.3),
-      );
-      // 위쪽 하이라이트
-      canvas.drawCircle(
-        Offset(cx - r * 0.2, cy - r * 0.2),
-        r * 0.55,
-        Paint()
-          ..color = const Color(0x55FFFFFF)
-          ..maskFilter = ui.MaskFilter.blur(ui.BlurStyle.normal, r * 0.2),
-      );
-    }
-
-    final picture = recorder.endRecording();
-    final image = await picture.toImage(sz, sz);
-    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-    return byteData!.buffer.asUint8List();
-  }
-
   Future<void> _addFogLayer() async {
     if (_map == null) return;
     try {
-      // 구름 텍스처 생성 후 맵에 등록
-      final texBytes = await _generateCloudTexture();
-      await _map!.addImage('cloud-tex', texBytes);
-
       final geoJson = _buildFogGeoJson();
       await _map!.addGeoJsonSource('fog-source', geoJson);
 
-      // 레이어 1: 안개 베이스 (반투명 회백색)
+      // 레이어 1: 짙은 안개 베이스
       await _map!.addLayer(
         'fog-source', 'fog-base',
         const FillLayerProperties(
-          fillColor: '#DDE3E8',
-          fillOpacity: 0.55,
+          fillColor: '#C8D4DC',
+          fillOpacity: 0.72,
         ),
       );
-      // 레이어 2: 구름 텍스처 패턴
+      // 레이어 2: 밝은 구름빛 덧칠 (위쪽이 밝아 보이는 효과)
       await _map!.addLayer(
-        'fog-source', 'fog-cloud',
+        'fog-source', 'fog-light',
         const FillLayerProperties(
-          fillPattern: 'cloud-tex',
-          fillOpacity: 0.90,
+          fillColor: '#EEF2F5',
+          fillOpacity: 0.45,
         ),
       );
 
