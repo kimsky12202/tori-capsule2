@@ -386,7 +386,31 @@ out geom;
   }
 
   Future<void> _onStyleLoaded(StyleLoadedEventData _) async {
+    await _add3DBuildings();
     await _updateFogPositions();
+  }
+
+  Future<void> _add3DBuildings() async {
+    if (_map == null) return;
+    try {
+      // light-v11 기반에 어두운 3D 건물 extrusion 추가
+      await _map!.style.addLayer(FillExtrusionLayer(
+        layerId: 'custom-buildings-3d',
+        sourceId: 'composite',
+      )
+        ..sourceLayer = 'building'
+        ..filter = [
+          '==',
+          ['get', 'extrude'],
+          'true'
+        ]
+        ..fillExtrusionColor = '#564848'
+        ..fillExtrusionHeight = ['get', 'height']
+        ..fillExtrusionBase = ['get', 'min_height']
+        ..fillExtrusionOpacity = 0.9);
+    } catch (e) {
+      debugPrint('3D 건물 레이어 오류: $e');
+    }
   }
 
   Future<void> _moveToMyLocation() async {
@@ -749,7 +773,7 @@ out geom;
         children: [
           MapWidget(
             key: const ValueKey('capsule_map'),
-            styleUri: 'mapbox://styles/mapbox/outdoors-v12',
+            styleUri: 'mapbox://styles/mapbox/light-v11',
             cameraOptions: CameraOptions(
               center: Point(coordinates: Position(127.2890, 36.4800)),
               zoom: 6.0,
