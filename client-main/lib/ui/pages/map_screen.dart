@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
+import 'package:maplibre_gl/maplibre_gl.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:image_picker/image_picker.dart' as img_picker;
 import 'package:exif/exif.dart';
@@ -48,15 +48,6 @@ class CapsulePin {
   );
 }
 
-// ignore: deprecated_member_use
-class _AnnotationTapListener implements OnPointAnnotationClickListener {
-  final void Function(PointAnnotation) onTap;
-  _AnnotationTapListener(this.onTap);
-
-  @override
-  void onPointAnnotationClick(PointAnnotation annotation) => onTap(annotation);
-}
-
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
 
@@ -66,18 +57,18 @@ class MapScreen extends StatefulWidget {
 
 class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
-  static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
   static const String _polygonsKey = 'capsule_polygons_v11';
 
-  MapboxMap? _map;
-  PointAnnotationManager? _pinManager;
-  PointAnnotationManager? _myLocManager;
-  PointAnnotation? _myLocMarker;
+  // OpenFreeMap - 무료, 가입 불필요
+  static const String _styleUrl =
+      'https://tiles.openfreemap.org/styles/liberty';
+
+  MaplibreMapController? _map;
+  Symbol? _myLocSymbol;
+  final Map<String, Symbol> _symbolMap = {};
 
   final List<CapsulePin> _pins = [];
-  final Map<String, String> _markerMap = {};
-  // 핀 하나에 여러 건물 폴리곤 (같은 도로의 모든 건물)
   final Map<String, List<List<List<double>>>> _buildingPolygons = {};
   final img_picker.ImagePicker _picker = img_picker.ImagePicker();
   StreamSubscription<geo.Position>? _posSub;
@@ -85,28 +76,20 @@ class MapScreenState extends State<MapScreen>
   List<List<Offset>> _fogPolygons = [];
   List<Offset> _fogCenters = [];
   bool _isLoading = false;
-  bool _tapListenerRegistered = false;
 
   @override
   bool get wantKeepAlive => true;
 
   @override
-  void initState() {
-    super.initState();
-    MapboxOptions.setAccessToken(_token);
-  }
-
-  @override
   void dispose() {
     _posSub?.cancel();
+    _map?.onSymbolTapped.remove(_onSymbolTapped);
     super.dispose();
   }
 
   // ── 구역 기반 건물 폴리곤 쿼리 ──────────────────────────
-  // 우선순위: 캠퍼스 전체 경계 > 아파트 단지 경계 > 도로 기준 건물 > 단일 건물
   Future<List<List<List<double>>>> _queryStreetBuildings(
       double lat, double lng) async {
-    // 1단계: 위치를 포함하는 캠퍼스 경계 way (대학/학교/병원)
     final campusWayQuery = '''
 [out:json];
 is_in($lat,$lng)->.a;
@@ -119,7 +102,6 @@ out geom;
     final campusWay = await _fetchPolygons(campusWayQuery, tag: 'campusWay');
     if (campusWay.isNotEmpty) return campusWay;
 
-    // 2단계: 위치를 포함하는 캠퍼스 경계 relation의 outer ring
     final campusRelQuery = '''
 [out:json];
 is_in($lat,$lng)->.a;
@@ -133,7 +115,6 @@ out geom;
     final campusRel = await _fetchPolygons(campusRelQuery, tag: 'campusRel');
     if (campusRel.isNotEmpty) return campusRel;
 
-    // 3단계: 300m 반경 내 캠퍼스 경계 way (is_in 미매핑 대비)
     final nearbyQuery = '''
 [out:json];
 (
@@ -142,10 +123,10 @@ out geom;
 );
 out geom;
 ''';
-    final nearbyBoundary = await _fetchPolygons(nearbyQuery, tag: 'nearbyBoundary');
+    final nearbyBoundary =
+        await _fetchPolygons(nearbyQuery, tag: 'nearbyBoundary');
     if (nearbyBoundary.isNotEmpty) return nearbyBoundary;
 
-    // 4단계: 아파트 단지 경계
     final aptQuery = '''
 [out:json];
 is_in($lat,$lng)->.a;
@@ -158,28 +139,26 @@ out geom;
     final aptBoundary = await _fetchPolygons(aptQuery, tag: 'apt');
     if (aptBoundary.isNotEmpty) return aptBoundary;
 
-    // 5단계: 도로 기준 건물들
     final streetQuery = '''
 [out:json];
 way(around:60,$lat,$lng)["highway"]["name"]->.street;
 way["building"](around.street:40);
 out geom;
 ''';
-    final streetBuildings = await _fetchPolygons(streetQuery, tag: 'street', maxSizeMeters: 200);
+    final streetBuildings =
+        await _fetchPolygons(streetQuery, tag: 'street', maxSizeMeters: 200);
     if (streetBuildings.isNotEmpty) return streetBuildings;
 
-    // 6단계: 단일 건물
     final isInQuery =
         '[out:json];is_in($lat,$lng)->.a;way["building"](pivot.a);out geom;';
-    final isInBuildings = await _fetchPolygons(isInQuery, tag: 'isin', maxSizeMeters: 200);
+    final isInBuildings =
+        await _fetchPolygons(isInQuery, tag: 'isin', maxSizeMeters: 200);
     if (isInBuildings.isNotEmpty) return isInBuildings;
 
-    // 7단계: 야외 → 원형
     debugPrint('Overpass: 모든 단계 실패 → 원형 폴백');
     return [_makeCirclePolygon(lat, lng, 25)];
   }
 
-  // maxSizeMeters=null 이면 크기 제한 없음 (캠퍼스 전체 경계용)
   Future<List<List<List<double>>>> _fetchPolygons(String query,
       {String tag = '', double? maxSizeMeters}) async {
     try {
@@ -208,8 +187,11 @@ out geom;
                   (n['lat'] as num).toDouble(),
                 ])
             .toList();
-        if (maxSizeMeters != null && _polyBboxMeters(poly) > maxSizeMeters) continue;
-        polys.add(_simplifyPolygon(poly, max: maxSizeMeters == null ? 64 : 28));
+        if (maxSizeMeters != null && _polyBboxMeters(poly) > maxSizeMeters) {
+          continue;
+        }
+        polys.add(_simplifyPolygon(poly,
+            max: maxSizeMeters == null ? 64 : 28));
       }
       debugPrint('Overpass[$tag] 폴리곤: ${polys.length}');
       return polys;
@@ -219,11 +201,6 @@ out geom;
     }
   }
 
-  // 하위 호환용 래퍼
-  Future<List<List<List<double>>>> _fetchAllBuildings(String query, {String tag = ''}) =>
-      _fetchPolygons(query, tag: tag, maxSizeMeters: 200);
-
-  // 폴리곤 바운딩박스의 긴 변 길이(미터) 반환
   double _polyBboxMeters(List<List<double>> poly) {
     double minLat = poly[0][1], maxLat = poly[0][1];
     double minLng = poly[0][0], maxLng = poly[0][0];
@@ -234,7 +211,8 @@ out geom;
       if (pt[0] > maxLng) maxLng = pt[0];
     }
     final dLat = (maxLat - minLat) * 111320;
-    final dLng = (maxLng - minLng) * 111320 * math.cos(minLat * math.pi / 180);
+    final dLng =
+        (maxLng - minLng) * 111320 * math.cos(minLat * math.pi / 180);
     return math.max(dLat, dLng);
   }
 
@@ -300,27 +278,26 @@ out geom;
       final geoPolys = _buildingPolygons[pin.id];
       if (geoPolys == null || geoPolys.isEmpty) continue;
       try {
-        // 도로 위 모든 건물 폴리곤 변환
         for (final geoPoly in geoPolys) {
           final screenPoly = <Offset>[];
           for (final pt in geoPoly) {
-            final sc = await _map!.pixelForCoordinate(
-              Point(coordinates: Position(pt[0], pt[1])),
-            );
-            screenPoly.add(Offset(sc.x, sc.y));
+            final sc = await _map!
+                .toScreenLocation(LatLng(pt[1], pt[0]));
+            screenPoly.add(Offset(sc.x.toDouble(), sc.y.toDouble()));
           }
           if (screenPoly.length >= 3) polys.add(screenPoly);
         }
-        final cc = await _map!.pixelForCoordinate(
-          Point(coordinates: Position(pin.lng, pin.lat)),
-        );
-        centers.add(Offset(cc.x, cc.y));
+        final cc =
+            await _map!.toScreenLocation(LatLng(pin.lat, pin.lng));
+        centers.add(Offset(cc.x.toDouble(), cc.y.toDouble()));
       } catch (_) {}
     }
-    if (mounted) setState(() {
-      _fogPolygons = polys;
-      _fogCenters = centers;
-    });
+    if (mounted) {
+      setState(() {
+        _fogPolygons = polys;
+        _fogCenters = centers;
+      });
+    }
   }
 
   // ── 저장/불러오기 ─────────────────────────────────────────
@@ -349,43 +326,48 @@ out geom;
   }
 
   Future<void> _addMarkerToMap(CapsulePin pin) async {
-    _pinManager ??= await _map?.annotations.createPointAnnotationManager();
+    if (_map == null) return;
     Uint8List markerImg;
     if (pin.photo != null && pin.photo!.existsSync()) {
       markerImg = await _makePhotoMarker(pin.photo!);
     } else {
       markerImg = await _makeDotImage(color: const Color(0xFF7B5EA7));
     }
-    final marker = await _pinManager?.create(
-      PointAnnotationOptions(
-        geometry: Point(coordinates: Position(pin.lng, pin.lat)),
-        image: markerImg,
-        iconSize: 0.8,
-      ),
+    final imageId = 'marker-${pin.id}';
+    await _map!.addImage(imageId, markerImg);
+    final symbol = await _map!.addSymbol(SymbolOptions(
+      geometry: LatLng(pin.lat, pin.lng),
+      iconImage: imageId,
+      iconSize: 0.8,
+    ));
+    _symbolMap[pin.id] = symbol;
+  }
+
+  void _onSymbolTapped(Symbol symbol) {
+    final pinId = _symbolMap.entries
+        .firstWhere(
+          (e) => e.value.id == symbol.id,
+          orElse: () => MapEntry('', symbol),
+        )
+        .key;
+    if (pinId.isEmpty) return;
+    final p = _pins.firstWhere(
+      (p) => p.id == pinId,
+      orElse: () => CapsulePin(id: '', lat: 0, lng: 0, title: ''),
     );
-    if (marker != null) _markerMap[pin.id] = marker.id;
-    _registerTapListener();
+    if (p.id.isNotEmpty) _showPinSheet(p);
   }
 
   // ── 지도 초기화 ───────────────────────────────────────────
-  Future<void> _onMapCreated(MapboxMap map) async {
+  Future<void> _onMapCreated(MaplibreMapController map) async {
     _map = map;
-    map.gestures.updateSettings(
-      GesturesSettings(
-        rotateEnabled: true,
-        pinchToZoomEnabled: true,
-        scrollEnabled: true,
-        doubleTapToZoomInEnabled: true,
-        doubleTouchToZoomOutEnabled: true,
-        quickZoomEnabled: true,
-      ),
-    );
+    map.onSymbolTapped.add(_onSymbolTapped);
     await _moveToMyLocation();
     _startTracking();
     await _loadPins();
   }
 
-  Future<void> _onStyleLoaded(StyleLoadedEventData _) async {
+  Future<void> _onStyleLoaded() async {
     await _add3DBuildings();
     await _updateFogPositions();
   }
@@ -393,30 +375,31 @@ out geom;
   Future<void> _add3DBuildings() async {
     if (_map == null) return;
     try {
-      // raw JSON으로 레이어 추가 - expression 지원 (typed API는 double?만 지원)
-      await _map!.style.addStyleLayer(
-        jsonEncode({
-          'id': 'custom-buildings-3d',
-          'type': 'fill-extrusion',
-          'source': 'composite',
-          'source-layer': 'building',
-          'filter': ['==', 'extrude', 'true'],
-          'paint': {
-            'fill-extrusion-color': '#564848',
-            'fill-extrusion-height': [
-              'interpolate',
-              ['linear'],
-              ['zoom'],
-              14, 0,
-              14.5, ['*', ['number', ['get', 'height'], 10], 2]
-            ],
-            'fill-extrusion-base': [
-              '*', ['number', ['get', 'min_height'], 0], 2
-            ],
-            'fill-extrusion-opacity': 0.9,
-          }
-        }),
-        null,
+      // OpenFreeMap liberty 스타일 기준 (OpenMapTiles 스키마)
+      // 소스: openmaptiles, 소스레이어: building
+      // 높이 속성: render_height / render_min_height
+      await _map!.addLayer(
+        'openmaptiles',
+        'building',
+        FillExtrusionLayerProperties(
+          fillExtrusionHeight: [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            14,
+            0,
+            14.5,
+            ['*', ['number', ['get', 'render_height'], 10], 2]
+          ],
+          fillExtrusionBase: [
+            '*',
+            ['number', ['get', 'render_min_height'], 0],
+            2
+          ],
+          fillExtrusionColor: '#564848',
+          fillExtrusionOpacity: 0.9,
+        ),
+        layerId: 'building-3d',
       );
     } catch (e) {
       debugPrint('3D 건물 레이어 오류: $e');
@@ -434,13 +417,13 @@ out geom;
           accuracy: geo.LocationAccuracy.high,
         ),
       );
-      _map?.flyTo(
-        CameraOptions(
-          center: Point(coordinates: Position(pos.longitude, pos.latitude)),
+      await _map?.animateCamera(
+        CameraUpdate.newCameraPosition(CameraPosition(
+          target: LatLng(pos.latitude, pos.longitude),
           zoom: 16.0,
-          pitch: 45.0,
-        ),
-        MapAnimationOptions(duration: 1000),
+          tilt: 45.0,
+        )),
+        duration: const Duration(milliseconds: 1000),
       );
       await _updateMyDot(pos.latitude, pos.longitude);
     } catch (e) {
@@ -449,18 +432,22 @@ out geom;
   }
 
   Future<void> _updateMyDot(double lat, double lng) async {
-    _myLocManager ??= await _map?.annotations.createPointAnnotationManager();
-    if (_myLocMarker != null) {
-      await _myLocManager?.delete(_myLocMarker!);
-      _myLocMarker = null;
-    }
-    _myLocMarker = await _myLocManager?.create(
-      PointAnnotationOptions(
-        geometry: Point(coordinates: Position(lng, lat)),
-        image: await _makeDotImage(color: const Color(0xFF4A90E2)),
+    if (_map == null) return;
+    final dotImg = await _makeDotImage(color: const Color(0xFF4A90E2));
+    const imageId = 'my-location-dot';
+    await _map!.addImage(imageId, dotImg);
+    if (_myLocSymbol != null) {
+      await _map!.updateSymbol(
+        _myLocSymbol!,
+        SymbolOptions(geometry: LatLng(lat, lng)),
+      );
+    } else {
+      _myLocSymbol = await _map!.addSymbol(SymbolOptions(
+        geometry: LatLng(lat, lng),
+        iconImage: imageId,
         iconSize: 1.0,
-      ),
-    );
+      ));
+    }
   }
 
   Future<Uint8List> _makeDotImage({required Color color}) async {
@@ -562,7 +549,6 @@ out geom;
 
   Future<Uint8List> _makePhotoMarker(File photo) async {
     final bytes = await photo.readAsBytes();
-    // EXIF orientation 읽기
     final exifData = await readExifFromBytes(bytes);
     int orientation = 1;
     final orientTag = exifData['Image Orientation'];
@@ -594,7 +580,6 @@ out geom;
       ),
     );
 
-    // EXIF 회전 보정 적용
     c.save();
     c.translate(sz / 2, sz / 2);
     if (orientation == 3) {
@@ -621,28 +606,6 @@ out geom;
         await rec.endRecording().toImage(sz.toInt(), (sz + 20).toInt());
     final d = await out.toByteData(format: ImageByteFormat.png);
     return d!.buffer.asUint8List();
-  }
-
-  void _registerTapListener() {
-    if (_tapListenerRegistered || _pinManager == null) return;
-    // ignore: deprecated_member_use
-    _pinManager!.addOnPointAnnotationClickListener(
-      _AnnotationTapListener((PointAnnotation tapped) {
-        final pinId = _markerMap.entries
-            .firstWhere(
-              (e) => e.value == tapped.id,
-              orElse: () => const MapEntry('', ''),
-            )
-            .key;
-        if (pinId.isEmpty) return;
-        final p = _pins.firstWhere(
-          (p) => p.id == pinId,
-          orElse: () => CapsulePin(id: '', lat: 0, lng: 0, title: ''),
-        );
-        if (p.id.isNotEmpty) _showPinSheet(p);
-      }),
-    );
-    _tapListenerRegistered = true;
   }
 
   // ── 사진 추가 ─────────────────────────────────────────────
@@ -693,20 +656,18 @@ out geom;
       await _addMarkerToMap(pin);
       await _savePins();
 
-      await _map?.flyTo(
-        CameraOptions(
-          center: Point(
-            coordinates: Position(gpsPos.longitude, gpsPos.latitude),
-          ),
+      await _map?.animateCamera(
+        CameraUpdate.newCameraPosition(CameraPosition(
+          target: LatLng(gpsPos.latitude, gpsPos.longitude),
           zoom: 18.5,
-          pitch: 65.0,
+          tilt: 65.0,
           bearing: 0.0,
-        ),
-        MapAnimationOptions(duration: 1800),
+        )),
+        duration: const Duration(milliseconds: 1800),
       );
 
-      final polygons = await _queryStreetBuildings(
-          gpsPos.latitude, gpsPos.longitude);
+      final polygons =
+          await _queryStreetBuildings(gpsPos.latitude, gpsPos.longitude);
       _buildingPolygons[pin.id] = polygons;
       await _savePolygons();
       await _updateFogPositions();
@@ -781,29 +742,30 @@ out geom;
     return Scaffold(
       body: Stack(
         children: [
-          MapWidget(
-            key: const ValueKey('capsule_map'),
-            styleUri: 'mapbox://styles/mapbox/light-v11',
-            cameraOptions: CameraOptions(
-              center: Point(coordinates: Position(127.2890, 36.4800)),
+          MaplibreMap(
+            styleString: _styleUrl,
+            initialCameraPosition: const CameraPosition(
+              target: LatLng(36.4800, 127.2890),
               zoom: 6.0,
-              pitch: 45.0,
+              tilt: 45.0,
             ),
             onMapCreated: _onMapCreated,
-            onStyleLoadedListener: _onStyleLoaded,
-            onCameraChangeListener: (_) => _updateFogPositions(),
+            onStyleLoadedCallback: _onStyleLoaded,
+            onCameraIdle: _updateFogPositions,
+            myLocationEnabled: false,
+            trackCameraPosition: true,
           ),
-          // 안개 오버레이 (임시 비활성화)
-          // Positioned.fill(
-          //   child: IgnorePointer(
-          //     child: CustomPaint(
-          //       painter: GradientFogPainter(
-          //         polygons: _fogPolygons,
-          //         centers: _fogCenters,
-          //       ),
-          //     ),
-          //   ),
-          // ),
+          // 안개 오버레이
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: GradientFogPainter(
+                  polygons: _fogPolygons,
+                  centers: _fogCenters,
+                ),
+              ),
+            ),
+          ),
           if (_isLoading)
             Container(
               color: Colors.black26,
@@ -855,20 +817,11 @@ class _MapFab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: backgroundColor,
-      borderRadius: BorderRadius.circular(16),
-      elevation: 4,
-      shadowColor: Colors.black26,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onPressed,
-        child: SizedBox(
-          width: 56,
-          height: 56,
-          child: Icon(icon, color: iconColor, size: 24),
-        ),
-      ),
+    return FloatingActionButton(
+      heroTag: heroTag,
+      backgroundColor: backgroundColor,
+      onPressed: onPressed,
+      child: Icon(icon, color: iconColor),
     );
   }
 }
