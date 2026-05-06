@@ -393,21 +393,29 @@ out geom;
   Future<void> _add3DBuildings() async {
     if (_map == null) return;
     try {
-      // light-v11 기반에 어두운 3D 건물 extrusion 추가
-      await _map!.style.addLayer(FillExtrusionLayer(
-        layerId: 'custom-buildings-3d',
-        sourceId: 'composite',
-      )
-        ..sourceLayer = 'building'
-        ..filter = [
-          '==',
-          ['get', 'extrude'],
-          'true'
-        ]
-        ..fillExtrusionColor = '#564848'
-        ..fillExtrusionHeight = ['get', 'height']
-        ..fillExtrusionBase = ['get', 'min_height']
-        ..fillExtrusionOpacity = 0.9);
+      // raw JSON으로 레이어 추가 - expression 지원 (typed API는 double?만 지원)
+      await _map!.style.addStyleLayer(
+        jsonEncode({
+          'id': 'custom-buildings-3d',
+          'type': 'fill-extrusion',
+          'source': 'composite',
+          'source-layer': 'building',
+          'filter': ['==', 'extrude', 'true'],
+          'paint': {
+            'fill-extrusion-color': '#564848',
+            'fill-extrusion-height': [
+              'interpolate',
+              ['linear'],
+              ['zoom'],
+              15, 0,
+              15.05, ['get', 'height']
+            ],
+            'fill-extrusion-base': ['get', 'min_height'],
+            'fill-extrusion-opacity': 0.9,
+          }
+        }),
+        null,
+      );
     } catch (e) {
       debugPrint('3D 건물 레이어 오류: $e');
     }
