@@ -68,7 +68,7 @@ class MapScreenState extends State<MapScreen>
     with AutomaticKeepAliveClientMixin {
   static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
   static const String _prefsKey = 'capsule_pins';
-  static const String _polygonsKey = 'capsule_polygons_v10';
+  static const String _polygonsKey = 'capsule_polygons_v11';
 
   MapboxMap? _map;
   PointAnnotationManager? _pinManager;
@@ -103,63 +103,85 @@ class MapScreenState extends State<MapScreen>
   }
 
   // ── 구역 기반 건물 폴리곤 쿼리 ──────────────────────────
-  // 우선순위: 대학/병원/학교 캠퍼스 > 아파트 단지 > 도로 기준 > 단일 건물
+  // 우선순위: 캠퍼스 전체 경계 > 아파트 단지 경계 > 도로 기준 건물 > 단일 건물
   Future<List<List<List<double>>>> _queryStreetBuildings(
       double lat, double lng) async {
-    // 1단계: 위치가 포함된 캠퍼스/단지 area 찾아서 그 안의 건물 전부
-    //   is_in → area.a 필터 (name 없어도 통과시킴)
-    final campusQuery = '''
+    // 1단계: 위치를 포함하는 캠퍼스 경계 way (대학/학교/병원)
+    final campusWayQuery = '''
 [out:json];
 is_in($lat,$lng)->.a;
 (
-  area.a["amenity"~"university|college|school|hospital|kindergarten"];
-  area.a["landuse"~"education|university|residential|commercial|retail|industrial"]["name"];
-  area.a["building"~"apartments|university|hospital|school"];
-)->.zone;
-way["building"](area.zone);
+  way(pivot.a)["amenity"~"university|college|school|hospital|kindergarten"];
+  way(pivot.a)["landuse"~"education|university"];
+);
 out geom;
 ''';
-    final campusBuildings = await _fetchAllBuildings(campusQuery, tag: 'campus');
-    if (campusBuildings.isNotEmpty) return campusBuildings;
+    final campusWay = await _fetchPolygons(campusWayQuery, tag: 'campusWay');
+    if (campusWay.isNotEmpty) return campusWay;
 
-    // 2단계: 근처 800m 내 캠퍼스 area - amenity/landuse=education 모두 포함
+    // 2단계: 위치를 포함하는 캠퍼스 경계 relation의 outer ring
+    final campusRelQuery = '''
+[out:json];
+is_in($lat,$lng)->.a;
+(
+  rel(pivot.a)["amenity"~"university|college|school|hospital|kindergarten"];
+  rel(pivot.a)["landuse"~"education|university"];
+)->.r;
+way(r:"outer");
+out geom;
+''';
+    final campusRel = await _fetchPolygons(campusRelQuery, tag: 'campusRel');
+    if (campusRel.isNotEmpty) return campusRel;
+
+    // 3단계: 300m 반경 내 캠퍼스 경계 way (is_in 미매핑 대비)
     final nearbyQuery = '''
 [out:json];
 (
-  way["amenity"~"university|college|school|hospital"](around:800,$lat,$lng);
-  relation["amenity"~"university|college|school|hospital"](around:800,$lat,$lng);
-  way["landuse"~"education|university"](around:800,$lat,$lng);
-  relation["landuse"~"education|university"](around:800,$lat,$lng);
-)->.campus;
-map_to_area.campus->.campus_area;
-way["building"](area.campus_area);
+  way["amenity"~"university|college|school|hospital"](around:300,$lat,$lng);
+  way["landuse"~"education|university"](around:300,$lat,$lng);
+);
 out geom;
 ''';
-    final nearbyBuildings = await _fetchAllBuildings(nearbyQuery, tag: 'nearby');
-    if (nearbyBuildings.isNotEmpty) return nearbyBuildings;
+    final nearbyBoundary = await _fetchPolygons(nearbyQuery, tag: 'nearbyBoundary');
+    if (nearbyBoundary.isNotEmpty) return nearbyBoundary;
 
-    // 3단계: 도로 기준 - 해당 도로의 양쪽 건물 전부
+    // 4단계: 아파트 단지 경계
+    final aptQuery = '''
+[out:json];
+is_in($lat,$lng)->.a;
+(
+  way(pivot.a)["landuse"~"residential"]["name"];
+  way(pivot.a)["building"~"apartments"]["name"];
+);
+out geom;
+''';
+    final aptBoundary = await _fetchPolygons(aptQuery, tag: 'apt');
+    if (aptBoundary.isNotEmpty) return aptBoundary;
+
+    // 5단계: 도로 기준 건물들
     final streetQuery = '''
 [out:json];
 way(around:60,$lat,$lng)["highway"]["name"]->.street;
 way["building"](around.street:40);
 out geom;
 ''';
-    final streetBuildings = await _fetchAllBuildings(streetQuery, tag: 'street');
+    final streetBuildings = await _fetchPolygons(streetQuery, tag: 'street', maxSizeMeters: 200);
     if (streetBuildings.isNotEmpty) return streetBuildings;
 
-    // 4단계: GPS 위치를 포함하는 단일 건물
+    // 6단계: 단일 건물
     final isInQuery =
         '[out:json];is_in($lat,$lng)->.a;way["building"](pivot.a);out geom;';
-    final isInBuildings = await _fetchAllBuildings(isInQuery, tag: 'isin');
+    final isInBuildings = await _fetchPolygons(isInQuery, tag: 'isin', maxSizeMeters: 200);
     if (isInBuildings.isNotEmpty) return isInBuildings;
 
-    // 5단계: 야외 → 원형
+    // 7단계: 야외 → 원형
     debugPrint('Overpass: 모든 단계 실패 → 원형 폴백');
     return [_makeCirclePolygon(lat, lng, 25)];
   }
 
-  Future<List<List<List<double>>>> _fetchAllBuildings(String query, {String tag = ''}) async {
+  // maxSizeMeters=null 이면 크기 제한 없음 (캠퍼스 전체 경계용)
+  Future<List<List<List<double>>>> _fetchPolygons(String query,
+      {String tag = '', double? maxSizeMeters}) async {
     try {
       final url = Uri.parse(
         'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(query)}',
@@ -186,9 +208,8 @@ out geom;
                   (n['lat'] as num).toDouble(),
                 ])
             .toList();
-        // 200m 이상의 거대 폴리곤(캠퍼스 경계선 등) 제외
-        if (_polyBboxMeters(poly) > 200) continue;
-        polys.add(_simplifyPolygon(poly));
+        if (maxSizeMeters != null && _polyBboxMeters(poly) > maxSizeMeters) continue;
+        polys.add(_simplifyPolygon(poly, max: maxSizeMeters == null ? 64 : 28));
       }
       debugPrint('Overpass[$tag] 폴리곤: ${polys.length}');
       return polys;
@@ -197,6 +218,10 @@ out geom;
       return [];
     }
   }
+
+  // 하위 호환용 래퍼
+  Future<List<List<List<double>>>> _fetchAllBuildings(String query, {String tag = ''}) =>
+      _fetchPolygons(query, tag: tag, maxSizeMeters: 200);
 
   // 폴리곤 바운딩박스의 긴 변 길이(미터) 반환
   double _polyBboxMeters(List<List<double>> poly) {
