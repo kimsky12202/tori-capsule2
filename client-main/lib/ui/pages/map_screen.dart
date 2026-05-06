@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import 'dart:ui' as ui;
+import 'fog_painter.dart';
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:math' as math;
@@ -75,6 +76,10 @@ class MapScreenState extends State<MapScreen>
   bool _fogLayerAdded = false;
   bool _isLoading = false;
 
+  // CustomPaint 구름 오버레이용 화면 좌표
+  List<List<Offset>> _fogPolygons = [];
+  List<Offset> _fogCenters = [];
+
   @override
   bool get wantKeepAlive => true;
 
@@ -82,6 +87,7 @@ class MapScreenState extends State<MapScreen>
   void dispose() {
     _posSub?.cancel();
     _map?.onSymbolTapped.remove(_onSymbolTapped);
+    _map?.removeListener(_onCameraChanged);
     super.dispose();
   }
 
@@ -366,6 +372,7 @@ out geom;
       } catch (_) {}
     }
     await _refreshFogLayer();
+    await _updateFogPositions();
   }
 
   Future<void> _addMarkerToMap(CapsulePin pin) async {
@@ -405,16 +412,45 @@ out geom;
   Future<void> _onMapCreated(MapLibreMapController map) async {
     _map = map;
     map.onSymbolTapped.add(_onSymbolTapped);
+    map.addListener(_onCameraChanged);
     await _moveToMyLocation();
     _startTracking();
     await _loadPins();
+  }
+
+  void _onCameraChanged() => _updateFogPositions();
+
+  Future<void> _updateFogPositions() async {
+    if (_map == null || !mounted) return;
+    final polys = <List<Offset>>[];
+    final centers = <Offset>[];
+    for (final pin in _pins) {
+      final geoPolys = _buildingPolygons[pin.id];
+      if (geoPolys == null || geoPolys.isEmpty) continue;
+      try {
+        for (final geoPoly in geoPolys) {
+          final screenPoly = <Offset>[];
+          for (final pt in geoPoly) {
+            final sc = await _map!.toScreenLocation(LatLng(pt[1], pt[0]));
+            screenPoly.add(Offset(sc.x.toDouble(), sc.y.toDouble()));
+          }
+          if (screenPoly.length >= 3) polys.add(screenPoly);
+        }
+        final cc = await _map!.toScreenLocation(LatLng(pin.lat, pin.lng));
+        centers.add(Offset(cc.x.toDouble(), cc.y.toDouble()));
+      } catch (_) {}
+    }
+    if (mounted) setState(() { _fogPolygons = polys; _fogCenters = centers; });
   }
 
   Future<void> _onStyleLoaded() async {
     await _refineBaseStyle();
     await _add3DBuildings();
     await _addFogLayer();
-    if (_pins.isNotEmpty) await _refreshFogLayer();
+    if (_pins.isNotEmpty) {
+      await _refreshFogLayer();
+      await _updateFogPositions();
+    }
   }
 
   Future<void> _refineBaseStyle() async {
@@ -733,6 +769,7 @@ out geom;
       _buildingPolygons[pin.id] = polygons;
       await _savePolygons();
       await _refreshFogLayer();
+      await _updateFogPositions();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -815,6 +852,17 @@ out geom;
             onStyleLoadedCallback: _onStyleLoaded,
             myLocationEnabled: false,
             trackCameraPosition: true,
+          ),
+          // 구름 오버레이 (CustomPaint)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: GradientFogPainter(
+                  polygons: _fogPolygons,
+                  centers: _fogCenters,
+                ),
+              ),
+            ),
           ),
           if (_isLoading)
             Container(
