@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:maplibre_gl/maplibre_gl.dart';
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:image_picker/image_picker.dart' as img_picker;
 import 'package:exif/exif.dart';
@@ -56,17 +56,18 @@ class MapScreen extends StatefulWidget {
 }
 
 class MapScreenState extends State<MapScreen>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin
+    implements OnPointAnnotationClickListener {
   static const String _prefsKey = 'capsule_pins';
   static const String _polygonsKey = 'capsule_polygons_v11';
+  static const String _styleUri = 'mapbox://styles/mapbox/streets-v12';
 
-  // OpenFreeMap bright - 색깔 있는 배경 (도로/공원/물 색상, 무료)
-  static const String _styleUrl =
-      'https://tiles.openfreemap.org/styles/bright';
+  MapboxMap? _mapboxMap;
+  PointAnnotationManager? _annotationManager;
 
-  MapLibreMapController? _map;
-  Symbol? _myLocSymbol;
-  final Map<String, Symbol> _symbolMap = {};
+  final Map<String, PointAnnotation> _annotationMap = {};
+  final Map<String, String> _annotationIdToPinId = {};
+  PointAnnotation? _myLocAnnotation;
 
   final List<CapsulePin> _pins = [];
   final Map<String, List<List<List<double>>>> _buildingPolygons = {};
@@ -76,7 +77,6 @@ class MapScreenState extends State<MapScreen>
   bool _fogLayerAdded = false;
   bool _isLoading = false;
 
-  // CustomPaint 구름 오버레이용 화면 좌표
   List<List<Offset>> _fogPolygons = [];
   List<Offset> _fogCenters = [];
 
@@ -86,12 +86,23 @@ class MapScreenState extends State<MapScreen>
   @override
   void dispose() {
     _posSub?.cancel();
-    _map?.onSymbolTapped.remove(_onSymbolTapped);
-    _map?.removeListener(_onCameraChanged);
     super.dispose();
   }
 
-  // ── 구역 기반 건물 폴리곤 쿼리 ──────────────────────────
+  // ── OnPointAnnotationClickListener ───────────────────────
+  @override
+  bool onPointAnnotationClick(PointAnnotation annotation) {
+    final pinId = _annotationIdToPinId[annotation.id];
+    if (pinId == null || pinId.isEmpty) return true;
+    final p = _pins.firstWhere(
+      (p) => p.id == pinId,
+      orElse: () => CapsulePin(id: '', lat: 0, lng: 0, title: ''),
+    );
+    if (p.id.isNotEmpty) _showPinSheet(p);
+    return true;
+  }
+
+  // ── Overpass / polygon helpers ────────────────────────────
   Future<List<List<List<double>>>> _queryStreetBuildings(
       double lat, double lng) async {
     final campusWayQuery = '''
@@ -159,7 +170,6 @@ out geom;
         await _fetchPolygons(isInQuery, tag: 'isin', maxSizeMeters: 200);
     if (isInBuildings.isNotEmpty) return isInBuildings;
 
-    debugPrint('Overpass: 모든 단계 실패 → 원형 폴백');
     return [_makeCirclePolygon(lat, lng, 25)];
   }
 
@@ -173,13 +183,9 @@ out geom;
         'User-Agent': 'tori-capsule/1.0 (Flutter)',
         'Accept': 'application/json',
       }).timeout(const Duration(seconds: 25));
-      if (res.statusCode != 200) {
-        debugPrint('Overpass[$tag] HTTP ${res.statusCode}');
-        return [];
-      }
+      if (res.statusCode != 200) return [];
       final elements =
           (jsonDecode(res.body) as Map)['elements'] as List? ?? [];
-      debugPrint('Overpass[$tag] elements: ${elements.length}');
 
       final polys = <List<List<double>>>[];
       for (final el in elements) {
@@ -197,7 +203,6 @@ out geom;
         polys.add(_simplifyPolygon(poly,
             max: maxSizeMeters == null ? 64 : 28));
       }
-      debugPrint('Overpass[$tag] 폴리곤: ${polys.length}');
       return polys;
     } catch (e) {
       debugPrint('Overpass[$tag] 오류: $e');
@@ -233,17 +238,14 @@ out geom;
     final mPerDegLng = 111320.0 * math.cos(lat * math.pi / 180);
     return [
       for (int i = 0; i <= points; i++)
-        () {
-          final angle = 2 * math.pi * i / points;
-          return [
-            lng + (radiusMeters * math.cos(angle)) / mPerDegLng,
-            lat + (radiusMeters * math.sin(angle)) / mPerDegLat,
-          ];
-        }(),
+        [
+          lng + (radiusMeters * math.cos(2 * math.pi * i / points)) / mPerDegLng,
+          lat + (radiusMeters * math.sin(2 * math.pi * i / points)) / mPerDegLat,
+        ],
     ];
   }
 
-  // ── 폴리곤 저장/불러오기 ─────────────────────────────────
+  // ── Polygon save/load ─────────────────────────────────────
   Future<void> _savePolygons() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
@@ -273,11 +275,8 @@ out geom;
     } catch (_) {}
   }
 
-  // ── 안개를 MapLibre 네이티브 GeoJSON 레이어로 관리 ──────────
-  // 지도에 고정되어 카메라 이동과 관계없이 항상 올바른 위치에 표시됨
-
+  // ── Fog layer ─────────────────────────────────────────────
   Map<String, dynamic> _buildFogGeoJson() {
-    // 외곽 링: 전 세계를 덮는 큰 사각형
     final outerRing = [
       [-180.0, -85.051129],
       [180.0, -85.051129],
@@ -285,33 +284,25 @@ out geom;
       [-180.0, 85.051129],
       [-180.0, -85.051129],
     ];
-
     final coordinates = <List<List<double>>>[outerRing];
-
-    // 내부 링(구멍): 걷힌 구역들
     for (final pin in _pins) {
       final geoPolys = _buildingPolygons[pin.id];
       if (geoPolys == null) continue;
       for (final geoPoly in geoPolys) {
         if (geoPoly.length < 3) continue;
         final ring = geoPoly.map((pt) => [pt[0], pt[1]]).toList();
-        // GeoJSON 구멍은 닫혀 있어야 함
         if (ring.first[0] != ring.last[0] || ring.first[1] != ring.last[1]) {
           ring.add(ring.first);
         }
         coordinates.add(ring);
       }
     }
-
     return {
       'type': 'FeatureCollection',
       'features': [
         {
           'type': 'Feature',
-          'geometry': {
-            'type': 'Polygon',
-            'coordinates': coordinates,
-          },
+          'geometry': {'type': 'Polygon', 'coordinates': coordinates},
           'properties': {},
         }
       ],
@@ -319,20 +310,20 @@ out geom;
   }
 
   Future<void> _addFogLayer() async {
-    if (_map == null) return;
+    if (_mapboxMap == null) return;
     try {
       final geoJson = _buildFogGeoJson();
-      await _map!.addGeoJsonSource('fog-source', geoJson);
-
-      // 안개 레이어 (반투명, 지도에 고정)
-      await _map!.addLayer(
-        'fog-source', 'fog-fill',
-        const FillLayerProperties(
-          fillColor: '#B8CEDD',
+      await _mapboxMap!.style.addSource(
+        GeoJsonSource(id: 'fog-source', data: jsonEncode(geoJson)),
+      );
+      await _mapboxMap!.style.addLayer(
+        FillLayer(
+          id: 'fog-fill',
+          sourceId: 'fog-source',
+          fillColor: 0xFFB8CEDD.toSigned(32),
           fillOpacity: 0.78,
         ),
       );
-
       _fogLayerAdded = true;
     } catch (e) {
       debugPrint('안개 레이어 오류: $e');
@@ -340,20 +331,21 @@ out geom;
   }
 
   Future<void> _refreshFogLayer() async {
-    if (_map == null || !_fogLayerAdded) return;
+    if (_mapboxMap == null || !_fogLayerAdded) return;
     try {
-      final geoJson = _buildFogGeoJson();
-      await _map!.setGeoJsonSource('fog-source', geoJson);
+      try { await _mapboxMap!.style.removeStyleLayer('fog-fill'); } catch (_) {}
+      try { await _mapboxMap!.style.removeStyleSource('fog-source'); } catch (_) {}
+      await _addFogLayer();
     } catch (e) {
-      debugPrint('안개 레이어 업데이트 오류: $e');
+      debugPrint('안개 업데이트 오류: $e');
     }
   }
 
-  // ── 저장/불러오기 ─────────────────────────────────────────
+  // ── Pin save/load ─────────────────────────────────────────
   Future<void> _savePins() async {
     final prefs = await SharedPreferences.getInstance();
-    final list = _pins.map((p) => jsonEncode(p.toJson())).toList();
-    await prefs.setStringList(_prefsKey, list);
+    await prefs.setStringList(
+        _prefsKey, _pins.map((p) => jsonEncode(p.toJson())).toList());
   }
 
   Future<void> _loadPins() async {
@@ -363,8 +355,7 @@ out geom;
     for (final raw in list) {
       try {
         final pin = CapsulePin.fromJson(
-          jsonDecode(raw) as Map<String, dynamic>,
-        );
+            jsonDecode(raw) as Map<String, dynamic>);
         if (pin.photoPath == null || File(pin.photoPath!).existsSync()) {
           _pins.add(pin);
           await _addMarkerToMap(pin);
@@ -376,52 +367,41 @@ out geom;
   }
 
   Future<void> _addMarkerToMap(CapsulePin pin) async {
-    if (_map == null) return;
-    Uint8List markerImg;
+    if (_mapboxMap == null || _annotationManager == null) return;
+    final Uint8List markerImg;
     if (pin.photo != null && pin.photo!.existsSync()) {
       markerImg = await _makePhotoMarker(pin.photo!);
     } else {
       markerImg = await _makeDotImage(color: const Color(0xFF7B5EA7));
     }
-    final imageId = 'marker-${pin.id}';
-    await _map!.addImage(imageId, markerImg);
-    final symbol = await _map!.addSymbol(SymbolOptions(
-      geometry: LatLng(pin.lat, pin.lng),
-      iconImage: imageId,
-      iconSize: 0.8,
-    ));
-    _symbolMap[pin.id] = symbol;
-  }
-
-  void _onSymbolTapped(Symbol symbol) {
-    final pinId = _symbolMap.entries
-        .firstWhere(
-          (e) => e.value.id == symbol.id,
-          orElse: () => MapEntry('', symbol),
-        )
-        .key;
-    if (pinId.isEmpty) return;
-    final p = _pins.firstWhere(
-      (p) => p.id == pinId,
-      orElse: () => CapsulePin(id: '', lat: 0, lng: 0, title: ''),
+    final annotation = await _annotationManager!.create(
+      PointAnnotationOptions(
+        geometry: Point(coordinates: Position(pin.lng, pin.lat)),
+        image: markerImg,
+        iconSize: 0.8,
+      ),
     );
-    if (p.id.isNotEmpty) _showPinSheet(p);
+    _annotationMap[pin.id] = annotation;
+    if (annotation.id != null) {
+      _annotationIdToPinId[annotation.id!] = pin.id;
+    }
   }
 
-  // ── 지도 초기화 ───────────────────────────────────────────
-  Future<void> _onMapCreated(MapLibreMapController map) async {
-    _map = map;
-    map.onSymbolTapped.add(_onSymbolTapped);
-    map.addListener(_onCameraChanged);
+  // ── Map init ──────────────────────────────────────────────
+  Future<void> _onMapCreated(MapboxMap mapboxMap) async {
+    _mapboxMap = mapboxMap;
+    _mapboxMap!.setOnCameraChangeListener((_) => _updateFogPositions());
+    _annotationManager =
+        await _mapboxMap!.annotations.createPointAnnotationManager();
+    _annotationManager!.addOnPointAnnotationClickListener(this);
     await _moveToMyLocation();
     _startTracking();
+    await _onStyleLoaded();
     await _loadPins();
   }
 
-  void _onCameraChanged() => _updateFogPositions();
-
   Future<void> _updateFogPositions() async {
-    if (_map == null || !mounted) return;
+    if (_mapboxMap == null || !mounted) return;
     final polys = <List<Offset>>[];
     final centers = <Offset>[];
     for (final pin in _pins) {
@@ -431,13 +411,17 @@ out geom;
         for (final geoPoly in geoPolys) {
           final screenPoly = <Offset>[];
           for (final pt in geoPoly) {
-            final sc = await _map!.toScreenLocation(LatLng(pt[1], pt[0]));
-            screenPoly.add(Offset(sc.x.toDouble(), sc.y.toDouble()));
+            final sc = await _mapboxMap!.pixelForCoordinate(
+              Point(coordinates: Position(pt[0], pt[1])),
+            );
+            screenPoly.add(Offset(sc.x, sc.y));
           }
           if (screenPoly.length >= 3) polys.add(screenPoly);
         }
-        final cc = await _map!.toScreenLocation(LatLng(pin.lat, pin.lng));
-        centers.add(Offset(cc.x.toDouble(), cc.y.toDouble()));
+        final cc = await _mapboxMap!.pixelForCoordinate(
+          Point(coordinates: Position(pin.lng, pin.lat)),
+        );
+        centers.add(Offset(cc.x, cc.y));
       } catch (_) {}
     }
     if (mounted) setState(() { _fogPolygons = polys; _fogCenters = centers; });
@@ -454,53 +438,43 @@ out geom;
   }
 
   Future<void> _refineBaseStyle() async {
-    if (_map == null) return;
-    // 기존 건물 레이어들 숨기기 (flat fill / extrusion / outline 모두)
+    if (_mapboxMap == null) return;
     for (final id in [
       'building', 'building-top', 'building-outline',
-      'building-3d', 'building-fill', 'building-extrusion'
+      'building-3d', 'building-fill', 'building-extrusion',
     ]) {
       try {
-        await _map!.setLayerProperties(
-            id, const FillLayerProperties(fillOpacity: 0));
-      } catch (_) {}
-      try {
-        await _map!.setLayerProperties(
-            id, const FillExtrusionLayerProperties(fillExtrusionOpacity: 0));
-      } catch (_) {}
-      try {
-        await _map!.setLayerProperties(
-            id, const LineLayerProperties(lineOpacity: 0));
+        await _mapboxMap!.style.setStyleLayerProperty(id, 'visibility', 'none');
       } catch (_) {}
     }
   }
 
   Future<void> _add3DBuildings() async {
-    if (_map == null) return;
+    if (_mapboxMap == null) return;
     try {
-      await _map!.addLayer(
-        'openmaptiles',
-        'building-3d-dark',
-        FillExtrusionLayerProperties(
-          fillExtrusionHeight: [
+      await _mapboxMap!.style.addLayer(
+        FillExtrusionLayer(
+          id: 'building-3d-dark',
+          sourceId: 'composite',
+          sourceLayer: 'building',
+          fillExtrusionColor: 0xFF2A2520.toSigned(32),
+          fillExtrusionHeightExpression: [
             'interpolate', ['linear'], ['zoom'],
             14, 0,
-            14.5, ['*', ['number', ['get', 'render_height'], 8], 2],
+            14.5, ['*', ['number', ['get', 'height'], 8], 2],
           ],
-          fillExtrusionBase: [
-            '*', ['number', ['get', 'render_min_height'], 0], 2,
+          fillExtrusionBaseExpression: [
+            '*', ['number', ['get', 'min_height'], 0], 2,
           ],
-          fillExtrusionColor: '#2A2520',
-          fillExtrusionOpacity: [
+          fillExtrusionOpacityExpression: [
             'interpolate', ['linear'], ['zoom'],
             14, 0.0,
             15, 0.9,
           ],
         ),
-        sourceLayer: 'building',
       );
     } catch (e) {
-      debugPrint('3D 건물 레이어 오류: $e');
+      debugPrint('3D 건물 오류: $e');
     }
   }
 
@@ -512,16 +486,15 @@ out geom;
       }
       final pos = await geo.Geolocator.getCurrentPosition(
         locationSettings: const geo.LocationSettings(
-          accuracy: geo.LocationAccuracy.high,
-        ),
+            accuracy: geo.LocationAccuracy.high),
       );
-      await _map?.animateCamera(
-        CameraUpdate.newCameraPosition(CameraPosition(
-          target: LatLng(pos.latitude, pos.longitude),
+      await _mapboxMap?.flyTo(
+        CameraOptions(
+          center: Point(coordinates: Position(pos.longitude, pos.latitude)),
           zoom: 16.0,
-          tilt: 45.0,
-        )),
-        duration: const Duration(milliseconds: 1000),
+          pitch: 45.0,
+        ),
+        MapAnimationOptions(duration: 1000),
       );
       await _updateMyDot(pos.latitude, pos.longitude);
     } catch (e) {
@@ -530,21 +503,26 @@ out geom;
   }
 
   Future<void> _updateMyDot(double lat, double lng) async {
-    if (_map == null) return;
+    if (_mapboxMap == null || _annotationManager == null) return;
     final dotImg = await _makeDotImage(color: const Color(0xFF4A90E2));
-    const imageId = 'my-location-dot';
-    await _map!.addImage(imageId, dotImg);
-    if (_myLocSymbol != null) {
-      await _map!.updateSymbol(
-        _myLocSymbol!,
-        SymbolOptions(geometry: LatLng(lat, lng)),
+    if (_myLocAnnotation != null) {
+      final updated = _myLocAnnotation!.copyWith(
+        PointAnnotationOptions(
+          geometry: Point(coordinates: Position(lng, lat)),
+          image: dotImg,
+          iconSize: 1.0,
+        ),
       );
+      await _annotationManager!.update(updated);
+      _myLocAnnotation = updated;
     } else {
-      _myLocSymbol = await _map!.addSymbol(SymbolOptions(
-        geometry: LatLng(lat, lng),
-        iconImage: imageId,
-        iconSize: 1.0,
-      ));
+      _myLocAnnotation = await _annotationManager!.create(
+        PointAnnotationOptions(
+          geometry: Point(coordinates: Position(lng, lat)),
+          image: dotImg,
+          iconSize: 1.0,
+        ),
+      );
     }
   }
 
@@ -567,20 +545,13 @@ out geom;
     ).listen((p) => _updateMyDot(p.latitude, p.longitude));
   }
 
-  // ── GPS EXIF 추출 ─────────────────────────────────────────
-  Future<(geo.Position?, String)> _extractGpsFromBytes(
-      Uint8List bytes) async {
+  Future<(geo.Position?, String)> _extractGpsFromBytes(Uint8List bytes) async {
     try {
       final data = await readExifFromBytes(bytes);
-      if (data.isEmpty) {
-        return (null, 'EXIF 데이터가 없어요. 카메라로 직접 찍은 사진을 써보세요.');
-      }
+      if (data.isEmpty) return (null, 'EXIF 데이터가 없어요.');
       if (!data.containsKey('GPS GPSLatitude') ||
           !data.containsKey('GPS GPSLongitude')) {
-        return (
-          null,
-          'GPS 정보가 없어요. 카메라 설정에서 "위치 태그"를 켜고 직접 찍은 사진을 써보세요.',
-        );
+        return (null, 'GPS 정보가 없어요. 카메라 설정에서 위치 태그를 켜주세요.');
       }
 
       double? parseDMS(IfdTag tag) {
@@ -603,16 +574,10 @@ out geom;
 
       return (
         geo.Position(
-          latitude: lat,
-          longitude: lng,
+          latitude: lat, longitude: lng,
           timestamp: DateTime.now(),
-          accuracy: 0,
-          altitude: 0,
-          altitudeAccuracy: 0,
-          heading: 0,
-          headingAccuracy: 0,
-          speed: 0,
-          speedAccuracy: 0,
+          accuracy: 0, altitude: 0, altitudeAccuracy: 0,
+          heading: 0, headingAccuracy: 0, speed: 0, speedAccuracy: 0,
         ),
         '',
       );
@@ -651,8 +616,7 @@ out geom;
     int orientation = 1;
     final orientTag = exifData['Image Orientation'];
     if (orientTag != null) {
-      orientation =
-          int.tryParse(orientTag.printable.split(' ').first) ?? 1;
+      orientation = int.tryParse(orientTag.printable.split(' ').first) ?? 1;
     }
 
     final image = await decodeImageFromList(bytes);
@@ -666,47 +630,35 @@ out geom;
       ..lineTo(sz / 2 + 10, sz - 4)
       ..close();
     c.drawPath(tail, Paint()..color = const Color(0xFF7B5EA7));
-    c.drawCircle(
-      Offset(sz / 2, sz / 2),
-      sz / 2 - 2,
-      Paint()..color = const Color(0xFF7B5EA7),
-    );
-    c.clipPath(
-      Path()..addOval(
-        Rect.fromCircle(
-            center: Offset(sz / 2, sz / 2), radius: sz / 2 - pad),
-      ),
-    );
+    c.drawCircle(Offset(sz / 2, sz / 2), sz / 2 - 2,
+        Paint()..color = const Color(0xFF7B5EA7));
+    c.clipPath(Path()
+      ..addOval(Rect.fromCircle(
+          center: Offset(sz / 2, sz / 2), radius: sz / 2 - pad)));
 
     c.save();
     c.translate(sz / 2, sz / 2);
-    if (orientation == 3) {
-      c.rotate(math.pi);
-    } else if (orientation == 6) {
-      c.rotate(math.pi / 2);
-    } else if (orientation == 8) {
-      c.rotate(-math.pi / 2);
-    }
+    if (orientation == 3) c.rotate(math.pi);
+    else if (orientation == 6) c.rotate(math.pi / 2);
+    else if (orientation == 8) c.rotate(-math.pi / 2);
     c.translate(-sz / 2, -sz / 2);
 
     final sw = image.width.toDouble(), sh = image.height.toDouble();
     final ms = math.min(sw, sh);
     c.drawImageRect(
       image,
-      Rect.fromCenter(
-          center: Offset(sw / 2, sh / 2), width: ms, height: ms),
+      Rect.fromCenter(center: Offset(sw / 2, sh / 2), width: ms, height: ms),
       Rect.fromLTWH(pad, pad, sz - pad * 2, sz - pad * 2),
       Paint(),
     );
     c.restore();
 
-    final out =
-        await rec.endRecording().toImage(sz.toInt(), (sz + 20).toInt());
+    final out = await rec.endRecording().toImage(sz.toInt(), (sz + 20).toInt());
     final d = await out.toByteData(format: ui.ImageByteFormat.png);
     return d!.buffer.asUint8List();
   }
 
-  // ── 사진 추가 ─────────────────────────────────────────────
+  // ── Add photo pin ─────────────────────────────────────────
   Future<void> addPhotoPin() async {
     if (!await Permission.accessMediaLocation.isGranted) {
       await Permission.accessMediaLocation.request();
@@ -738,8 +690,7 @@ out geom;
         }
         gpsPos = await geo.Geolocator.getCurrentPosition(
           locationSettings: const geo.LocationSettings(
-            accuracy: geo.LocationAccuracy.high,
-          ),
+              accuracy: geo.LocationAccuracy.high),
         );
       }
 
@@ -754,14 +705,14 @@ out geom;
       await _addMarkerToMap(pin);
       await _savePins();
 
-      await _map?.animateCamera(
-        CameraUpdate.newCameraPosition(CameraPosition(
-          target: LatLng(gpsPos.latitude, gpsPos.longitude),
+      await _mapboxMap?.flyTo(
+        CameraOptions(
+          center: Point(coordinates: Position(gpsPos.longitude, gpsPos.latitude)),
           zoom: 18.5,
-          tilt: 65.0,
+          pitch: 65.0,
           bearing: 0.0,
-        )),
-        duration: const Duration(milliseconds: 1800),
+        ),
+        MapAnimationOptions(duration: 1800),
       );
 
       final polygons =
@@ -772,9 +723,8 @@ out geom;
       await _updateFogPositions();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('오류: $e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('오류: $e')));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -807,21 +757,16 @@ out geom;
             if (pin.photo != null && pin.photo!.existsSync())
               ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: Image.file(
-                  pin.photo!,
-                  height: 200,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                ),
+                child: Image.file(pin.photo!,
+                    height: 200, width: double.infinity, fit: BoxFit.cover),
               ),
             const SizedBox(height: 16),
             Text(
               pin.title,
               style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF2E2B2A),
-              ),
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF2E2B2A)),
             ),
             const SizedBox(height: 8),
             Text(
@@ -838,22 +783,22 @@ out geom;
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    MapboxOptions.setAccessToken(
+      const String.fromEnvironment('MAPBOX_TOKEN'),
+    );
     return Scaffold(
       body: Stack(
         children: [
-          MapLibreMap(
-            styleString: _styleUrl,
-            initialCameraPosition: const CameraPosition(
-              target: LatLng(36.4800, 127.2890),
+          MapWidget(
+            key: const ValueKey('map'),
+            styleUri: _styleUri,
+            cameraOptions: CameraOptions(
+              center: Point(coordinates: Position(127.2890, 36.4800)),
               zoom: 6.0,
-              tilt: 45.0,
+              pitch: 45.0,
             ),
             onMapCreated: _onMapCreated,
-            onStyleLoadedCallback: _onStyleLoaded,
-            myLocationEnabled: false,
-            trackCameraPosition: true,
           ),
-          // 구름 오버레이 (CustomPaint)
           Positioned.fill(
             child: IgnorePointer(
               child: CustomPaint(
