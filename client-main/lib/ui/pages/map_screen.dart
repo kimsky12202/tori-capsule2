@@ -413,30 +413,29 @@ out geom;
   Future<void> _onStyleLoaded() async {
     await _refineBaseStyle();
     await _add3DBuildings();
-    await _addFogLayer();
-    // 이미 핀이 로드된 경우(스타일 재로드) 안개 갱신
-    if (_pins.isNotEmpty) await _refreshFogLayer();
+    // 안개 임시 비활성화
+    // await _addFogLayer();
+    // if (_pins.isNotEmpty) await _refreshFogLayer();
   }
 
   Future<void> _refineBaseStyle() async {
     if (_map == null) return;
-    // 기존 2D 건물 레이어 숨기기 (3D로 대체)
-    for (final id in ['building', 'building-top', 'building-outline',
-                       'building-3d', 'building-fill']) {
+    // 기존 건물 레이어들 숨기기 (flat fill / extrusion / outline 모두)
+    for (final id in [
+      'building', 'building-top', 'building-outline',
+      'building-3d', 'building-fill', 'building-extrusion'
+    ]) {
       try {
         await _map!.setLayerProperties(
             id, const FillLayerProperties(fillOpacity: 0));
       } catch (_) {}
       try {
         await _map!.setLayerProperties(
-            id, const LineLayerProperties(lineOpacity: 0));
+            id, const FillExtrusionLayerProperties(fillExtrusionOpacity: 0));
       } catch (_) {}
-    }
-    // 물 색상 - 부드러운 파란색
-    for (final id in ['water', 'water-polygon']) {
       try {
         await _map!.setLayerProperties(
-            id, const FillLayerProperties(fillColor: '#A8C8DC'));
+            id, const LineLayerProperties(lineOpacity: 0));
       } catch (_) {}
     }
   }
@@ -444,27 +443,28 @@ out geom;
   Future<void> _add3DBuildings() async {
     if (_map == null) return;
     try {
+      // 'building-3d-dark' 로 새 ID 사용 (기존 'building' ID 충돌 방지)
+      // sourceLayer: 'building' 으로 openmaptiles 소스의 building 레이어 참조
       await _map!.addLayer(
         'openmaptiles',
-        'building',
+        'building-3d-dark',
         FillExtrusionLayerProperties(
-          // 줌 14부터 서서히 올라옴
           fillExtrusionHeight: [
             'interpolate', ['linear'], ['zoom'],
             14, 0,
-            14.5, ['*', ['number', ['get', 'render_height'], 8], 2]
+            14.5, ['*', ['number', ['get', 'render_height'], 8], 2],
           ],
           fillExtrusionBase: [
-            '*', ['number', ['get', 'render_min_height'], 0], 2
+            '*', ['number', ['get', 'render_min_height'], 0], 2,
           ],
-          // 거의 검정에 가까운 짙은 색 (스크린샷 스타일)
           fillExtrusionColor: '#2A2520',
           fillExtrusionOpacity: [
             'interpolate', ['linear'], ['zoom'],
             14, 0.0,
-            15, 0.85
+            15, 0.9,
           ],
         ),
+        sourceLayer: 'building',
       );
     } catch (e) {
       debugPrint('3D 건물 레이어 오류: $e');
