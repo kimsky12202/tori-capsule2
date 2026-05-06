@@ -59,9 +59,11 @@ class MapScreenState extends State<MapScreen>
   static const String _prefsKey = 'capsule_pins';
   static const String _polygonsKey = 'capsule_polygons_v11';
 
-  // OpenFreeMap bright - 색깔 있는 배경 (도로/공원/물 색상)
+  // Mapbox streets-v12 (토큰은 --dart-define=MAPBOX_TOKEN=pk.xxx 로 주입)
+  static const String _mapboxToken =
+      String.fromEnvironment('MAPBOX_TOKEN');
   static const String _styleUrl =
-      'https://tiles.openfreemap.org/styles/bright';
+      'https://api.mapbox.com/styles/v1/mapbox/streets-v12?access_token=$_mapboxToken';
 
   MapLibreMapController? _map;
   Symbol? _myLocSymbol;
@@ -443,10 +445,9 @@ out geom;
   Future<void> _add3DBuildings() async {
     if (_map == null) return;
     try {
-      // 'building-3d-dark' 로 새 ID 사용 (기존 'building' ID 충돌 방지)
-      // sourceLayer: 'building' 으로 openmaptiles 소스의 building 레이어 참조
+      // Mapbox 소스: 'composite', sourceLayer: 'building'
       await _map!.addLayer(
-        'openmaptiles',
+        'composite',
         'building-3d-dark',
         FillExtrusionLayerProperties(
           fillExtrusionHeight: [
@@ -809,6 +810,7 @@ out geom;
         children: [
           MapLibreMap(
             styleString: _styleUrl,
+            accessToken: _mapboxToken,
             initialCameraPosition: const CameraPosition(
               target: LatLng(36.4800, 127.2890),
               zoom: 6.0,
