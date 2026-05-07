@@ -725,6 +725,21 @@ out geom;
     }
   }
 
+  Future<void> _deletePin(CapsulePin pin) async {
+    final annotation = _annotationMap[pin.id];
+    if (annotation != null && _annotationManager != null) {
+      await _annotationManager!.delete(annotation);
+      _annotationIdToPinId.remove(annotation.id);
+      _annotationMap.remove(pin.id);
+    }
+    _pins.removeWhere((p) => p.id == pin.id);
+    _buildingPolygons.remove(pin.id);
+    await _savePins();
+    await _savePolygons();
+    await _refreshFogLayer();
+    await _updateFogPositions();
+  }
+
   void _showPinSheet(CapsulePin pin) {
     showModalBottomSheet(
       context: context,
@@ -767,7 +782,72 @@ out geom;
               '📍 ${pin.lat.toStringAsFixed(5)}, ${pin.lng.toStringAsFixed(5)}',
               style: const TextStyle(color: Color(0xFF7A756D), fontSize: 13),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _mapboxMap?.flyTo(
+                        CameraOptions(
+                          center: Point(coordinates: Position(pin.lng, pin.lat)),
+                          zoom: 18.5,
+                          pitch: 60.0,
+                        ),
+                        MapAnimationOptions(duration: 1000),
+                      );
+                    },
+                    icon: const Icon(Icons.my_location, size: 18),
+                    label: const Text('위치로 이동'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF7B5EA7),
+                      side: const BorderSide(color: Color(0xFF7B5EA7)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        builder: (_) => AlertDialog(
+                          title: const Text('캡슐 삭제'),
+                          content: const Text('이 타임캡슐을 삭제할까요?\n안개도 다시 덮입니다.'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text('취소'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              child: const Text('삭제',
+                                  style: TextStyle(color: Colors.red)),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirm == true && mounted) {
+                        Navigator.pop(context);
+                        await _deletePin(pin);
+                      }
+                    },
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    label: const Text('삭제'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                      side: const BorderSide(color: Colors.red),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
           ],
         ),
       ),
