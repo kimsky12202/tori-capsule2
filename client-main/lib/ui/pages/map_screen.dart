@@ -6,6 +6,7 @@ import 'package:exif/exif.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_unity_widget/flutter_unity_widget.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:ui' as ui;
@@ -65,6 +66,8 @@ class MapScreenState extends State<MapScreen>
 
   MapboxMap? _mapboxMap;
   PointAnnotationManager? _annotationManager;
+  UnityWidgetController? _unityController;
+  bool _unityReady = false;
 
   final Map<String, PointAnnotation> _annotationMap = {};
   final Map<String, String> _annotationIdToPinId = {};
@@ -83,7 +86,33 @@ class MapScreenState extends State<MapScreen>
   @override
   void dispose() {
     _posSub?.cancel();
+    _unityController?.dispose();
     super.dispose();
+  }
+
+  // ── Unity callbacks ───────────────────────────────────────
+  void _onUnityCreated(UnityWidgetController controller) {
+    _unityController = controller;
+  }
+
+  void _onUnityMessage(UnityMessage message) {}
+
+  void _onUnitySceneLoaded(SceneLoaded scene) {
+    _unityReady = true;
+    _sendFogToUnity();
+  }
+
+  void _sendFogToUnity() {
+    if (!_unityReady || _unityController == null) return;
+    final polys = _buildingPolygons.values.expand((v) => v).map((geoPoly) {
+      return geoPoly.map((pt) => {'lng': pt[0], 'lat': pt[1]}).toList();
+    }).toList();
+    final centers = _pins.map((p) => {'lat': p.lat, 'lng': p.lng}).toList();
+    _unityController!.postMessage(
+      'FogController',
+      'UpdateFog',
+      jsonEncode({'polygons': polys, 'centers': centers}),
+    );
   }
 
   @override
@@ -608,6 +637,7 @@ out geom;
           await _queryStreetBuildings(gpsPos.latitude, gpsPos.longitude);
       _buildingPolygons[pin.id] = polygons;
       await _savePolygons();
+      _sendFogToUnity();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -629,6 +659,7 @@ out geom;
     _buildingPolygons.remove(pin.id);
     await _savePins();
     await _savePolygons();
+    _sendFogToUnity();
   }
 
   void _showPinSheet(CapsulePin pin) {
@@ -758,6 +789,17 @@ out geom;
             key: const ValueKey('map'),
             styleUri: _styleUri,
             onMapCreated: _onMapCreated,
+          ),
+          Positioned.fill(
+            child: IgnorePointer(
+              child: UnityWidget(
+                onUnityCreated: _onUnityCreated,
+                onUnityMessage: _onUnityMessage,
+                onUnitySceneLoaded: _onUnitySceneLoaded,
+                useAndroidViewSurface: true,
+                fullscreen: false,
+              ),
+            ),
           ),
           if (_isLoading)
             Container(
