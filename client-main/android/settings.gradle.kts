@@ -28,6 +28,7 @@ include(":unityLibrary")
 project(":unityLibrary").projectDir = file("unityLibrary/unityLibrary")
 
 dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
     repositories {
         google()
         mavenCentral()
