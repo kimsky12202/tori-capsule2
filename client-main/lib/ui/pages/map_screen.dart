@@ -95,7 +95,7 @@ class MapScreenState extends State<MapScreen>
     _unityController = controller;
   }
 
-  void _onUnityMessage(String message) {}
+  void _onUnityMessage(dynamic message) {}
 
   void _onUnitySceneLoaded(SceneLoaded? scene) {
     _unityReady = true;
