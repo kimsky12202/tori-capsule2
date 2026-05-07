@@ -6,10 +6,10 @@ import 'package:exif/exif.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_unity_widget/flutter_unity_widget.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:ui' as ui;
-import 'fog_painter.dart';
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:math' as math;
@@ -66,6 +66,8 @@ class MapScreenState extends State<MapScreen>
 
   MapboxMap? _mapboxMap;
   PointAnnotationManager? _annotationManager;
+  UnityWidgetController? _unityController;
+  bool _unityReady = false;
 
   final Map<String, PointAnnotation> _annotationMap = {};
   final Map<String, String> _annotationIdToPinId = {};
@@ -79,16 +81,41 @@ class MapScreenState extends State<MapScreen>
   bool _fogLayerAdded = false;
   bool _isLoading = false;
 
-  List<List<Offset>> _fogPolygons = [];
-  List<Offset> _fogCenters = [];
-
   @override
   bool get wantKeepAlive => true;
 
   @override
   void dispose() {
     _posSub?.cancel();
+    _unityController?.dispose();
     super.dispose();
+  }
+
+  // ── Unity callbacks ───────────────────────────────────────
+  void _onUnityCreated(UnityWidgetController controller) {
+    _unityController = controller;
+  }
+
+  void _onUnityMessage(UnityMessage message) {
+    // Unity → Flutter 메시지 (필요시 사용)
+  }
+
+  void _onUnitySceneLoaded(SceneLoaded scene) {
+    _unityReady = true;
+    _sendFogToUnity();
+  }
+
+  void _sendFogToUnity() {
+    if (!_unityReady || _unityController == null) return;
+    final polys = _buildingPolygons.values.expand((v) => v).map((geoPoly) {
+      return geoPoly.map((pt) => {'lng': pt[0], 'lat': pt[1]}).toList();
+    }).toList();
+    final centers = _pins.map((p) => {'lat': p.lat, 'lng': p.lng}).toList();
+    _unityController!.postMessage(
+      'FogController',
+      'UpdateFog',
+      jsonEncode({'polygons': polys, 'centers': centers}),
+    );
   }
 
   @override
@@ -402,29 +429,8 @@ out geom;
 
   Future<void> _updateFogPositions() async {
     if (_mapboxMap == null || !mounted) return;
-    final polys = <List<Offset>>[];
-    final centers = <Offset>[];
-    for (final pin in _pins) {
-      final geoPolys = _buildingPolygons[pin.id];
-      if (geoPolys == null || geoPolys.isEmpty) continue;
-      try {
-        for (final geoPoly in geoPolys) {
-          final screenPoly = <Offset>[];
-          for (final pt in geoPoly) {
-            final sc = await _mapboxMap!.pixelForCoordinate(
-              Point(coordinates: Position(pt[0], pt[1])),
-            );
-            screenPoly.add(Offset(sc.x, sc.y));
-          }
-          if (screenPoly.length >= 3) polys.add(screenPoly);
-        }
-        final cc = await _mapboxMap!.pixelForCoordinate(
-          Point(coordinates: Position(pin.lng, pin.lat)),
-        );
-        centers.add(Offset(cc.x, cc.y));
-      } catch (_) {}
-    }
-    if (mounted) setState(() { _fogPolygons = polys; _fogCenters = centers; });
+    // Unity에 지리 좌표 기반 폴리곤 전송 (화면 좌표 계산은 Unity 내부에서)
+    _sendFogToUnity();
   }
 
   Future<void> _onStyleLoaded() async {
@@ -871,11 +877,12 @@ out geom;
           ),
           Positioned.fill(
             child: IgnorePointer(
-              child: CustomPaint(
-                painter: GradientFogPainter(
-                  polygons: _fogPolygons,
-                  centers: _fogCenters,
-                ),
+              child: UnityWidget(
+                onUnityCreated: _onUnityCreated,
+                onUnityMessage: _onUnityMessage,
+                onUnitySceneLoaded: _onUnitySceneLoaded,
+                useAndroidViewSurface: true,
+                fullscreen: false,
               ),
             ),
           ),
