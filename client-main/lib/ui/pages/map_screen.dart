@@ -9,7 +9,6 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import 'dart:ui' as ui;
-import 'fog_painter.dart';
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:math' as math;
@@ -76,11 +75,7 @@ class MapScreenState extends State<MapScreen>
   final img_picker.ImagePicker _picker = img_picker.ImagePicker();
   StreamSubscription<geo.Position>? _posSub;
 
-  bool _fogLayerAdded = false;
   bool _isLoading = false;
-
-  List<List<Offset>> _fogPolygons = [];
-  List<Offset> _fogCenters = [];
 
   @override
   bool get wantKeepAlive => true;
@@ -277,72 +272,6 @@ out geom;
     } catch (_) {}
   }
 
-  // ── Fog layer ─────────────────────────────────────────────
-  Map<String, dynamic> _buildFogGeoJson() {
-    final outerRing = [
-      [-180.0, -85.051129],
-      [180.0, -85.051129],
-      [180.0, 85.051129],
-      [-180.0, 85.051129],
-      [-180.0, -85.051129],
-    ];
-    final coordinates = <List<List<double>>>[outerRing];
-    for (final pin in _pins) {
-      final geoPolys = _buildingPolygons[pin.id];
-      if (geoPolys == null) continue;
-      for (final geoPoly in geoPolys) {
-        if (geoPoly.length < 3) continue;
-        final ring = geoPoly.map((pt) => [pt[0], pt[1]]).toList();
-        if (ring.first[0] != ring.last[0] || ring.first[1] != ring.last[1]) {
-          ring.add(ring.first);
-        }
-        coordinates.add(ring);
-      }
-    }
-    return {
-      'type': 'FeatureCollection',
-      'features': [
-        {
-          'type': 'Feature',
-          'geometry': {'type': 'Polygon', 'coordinates': coordinates},
-          'properties': {},
-        }
-      ],
-    };
-  }
-
-  Future<void> _addFogLayer() async {
-    if (_mapboxMap == null) return;
-    try {
-      final geoJson = _buildFogGeoJson();
-      await _mapboxMap!.style.addSource(
-        GeoJsonSource(id: 'fog-source', data: jsonEncode(geoJson)),
-      );
-      await _mapboxMap!.style.addLayer(
-        FillLayer(
-          id: 'fog-fill',
-          sourceId: 'fog-source',
-          fillColor: 0xFFB8CEDD.toSigned(32),
-          fillOpacity: 0.78,
-        ),
-      );
-      _fogLayerAdded = true;
-    } catch (e) {
-      debugPrint('안개 레이어 오류: $e');
-    }
-  }
-
-  Future<void> _refreshFogLayer() async {
-    if (_mapboxMap == null || !_fogLayerAdded) return;
-    try {
-      try { await _mapboxMap!.style.removeStyleLayer('fog-fill'); } catch (_) {}
-      try { await _mapboxMap!.style.removeStyleSource('fog-source'); } catch (_) {}
-      await _addFogLayer();
-    } catch (e) {
-      debugPrint('안개 업데이트 오류: $e');
-    }
-  }
-
   // ── Pin save/load ─────────────────────────────────────────
   Future<void> _savePins() async {
     final prefs = await SharedPreferences.getInstance();
@@ -364,8 +293,6 @@ out geom;
         }
       } catch (_) {}
     }
-    await _refreshFogLayer();
-    await _updateFogPositions();
   }
 
   Future<void> _addMarkerToMap(CapsulePin pin) async {
@@ -400,41 +327,9 @@ out geom;
     await _loadPins();
   }
 
-  Future<void> _updateFogPositions() async {
-    if (_mapboxMap == null || !mounted) return;
-    final polys = <List<Offset>>[];
-    final centers = <Offset>[];
-    for (final pin in _pins) {
-      final geoPolys = _buildingPolygons[pin.id];
-      if (geoPolys == null || geoPolys.isEmpty) continue;
-      try {
-        for (final geoPoly in geoPolys) {
-          final screenPoly = <Offset>[];
-          for (final pt in geoPoly) {
-            final sc = await _mapboxMap!.pixelForCoordinate(
-              Point(coordinates: Position(pt[0], pt[1])),
-            );
-            screenPoly.add(Offset(sc.x, sc.y));
-          }
-          if (screenPoly.length >= 3) polys.add(screenPoly);
-        }
-        final cc = await _mapboxMap!.pixelForCoordinate(
-          Point(coordinates: Position(pin.lng, pin.lat)),
-        );
-        centers.add(Offset(cc.x, cc.y));
-      } catch (_) {}
-    }
-    if (mounted) setState(() { _fogPolygons = polys; _fogCenters = centers; });
-  }
-
   Future<void> _onStyleLoaded() async {
     await _refineBaseStyle();
     await _add3DBuildings();
-    await _addFogLayer();
-    if (_pins.isNotEmpty) {
-      await _refreshFogLayer();
-      await _updateFogPositions();
-    }
   }
 
   Future<void> _refineBaseStyle() async {
@@ -713,8 +608,6 @@ out geom;
           await _queryStreetBuildings(gpsPos.latitude, gpsPos.longitude);
       _buildingPolygons[pin.id] = polygons;
       await _savePolygons();
-      await _refreshFogLayer();
-      await _updateFogPositions();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -736,8 +629,6 @@ out geom;
     _buildingPolygons.remove(pin.id);
     await _savePins();
     await _savePolygons();
-    await _refreshFogLayer();
-    await _updateFogPositions();
   }
 
   void _showPinSheet(CapsulePin pin) {
@@ -867,17 +758,6 @@ out geom;
             key: const ValueKey('map'),
             styleUri: _styleUri,
             onMapCreated: _onMapCreated,
-            onCameraChangeListener: (_) => _updateFogPositions(),
-          ),
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: GradientFogPainter(
-                  polygons: _fogPolygons,
-                  centers: _fogCenters,
-                ),
-              ),
-            ),
           ),
           if (_isLoading)
             Container(
