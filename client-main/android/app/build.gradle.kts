@@ -39,6 +39,12 @@ android {
     }
 }
 
+repositories {
+    flatDir {
+        dirs("../unityLibrary/unityLibrary/libs")
+    }
+}
+
 flutter {
     source = "../.."
 }
