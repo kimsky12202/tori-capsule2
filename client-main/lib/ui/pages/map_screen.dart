@@ -95,9 +95,9 @@ class MapScreenState extends State<MapScreen>
     _unityController = controller;
   }
 
-  void _onUnityMessage(UnityMessage message) {}
+  void _onUnityMessage(String message) {}
 
-  void _onUnitySceneLoaded(SceneLoaded scene) {
+  void _onUnitySceneLoaded(SceneLoaded? scene) {
     _unityReady = true;
     _sendFogToUnity();
   }
