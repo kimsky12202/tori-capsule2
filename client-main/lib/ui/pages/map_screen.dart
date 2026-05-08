@@ -379,7 +379,6 @@ out geom;
     _startTracking();
     await _onStyleLoaded();
     await _loadPins();
-    _mapboxMap!.setOnCameraChangeListener((_) => _scheduleFogUpdate());
   }
 
   Future<void> _onStyleLoaded() async {
@@ -822,6 +821,7 @@ out geom;
             key: const ValueKey('map'),
             styleUri: _styleUri,
             onMapCreated: _onMapCreated,
+            onCameraChangeListener: (_) => _scheduleFogUpdate(),
           ),
           Positioned.fill(
             child: IgnorePointer(
