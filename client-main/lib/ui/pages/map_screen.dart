@@ -829,7 +829,7 @@ out geom;
                 onUnityCreated: _onUnityCreated,
                 onUnityMessage: _onUnityMessage,
                 onUnitySceneLoaded: _onUnitySceneLoaded,
-                useAndroidViewSurface: true,
+                useAndroidViewSurface: false,
                 fullscreen: false,
               ),
             ),
