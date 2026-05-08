@@ -13,8 +13,6 @@ import 'dart:ui' as ui;
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:math' as math;
-import 'fog_painter.dart';
-
 class CapsulePin {
   final String id;
   final double lat;
@@ -80,9 +78,6 @@ class MapScreenState extends State<MapScreen>
   StreamSubscription<geo.Position>? _posSub;
 
   bool _isLoading = false;
-
-  List<List<Offset>> _fogPolygonsScreen = [];
-  List<Offset> _fogCentersScreen = [];
   Timer? _fogUpdateTimer;
 
   @override
@@ -105,67 +100,56 @@ class MapScreenState extends State<MapScreen>
 
   void _onUnitySceneLoaded(SceneLoaded? scene) {
     _unityReady = true;
-    _sendFogToUnity();
+    _scheduleFogUpdate();
   }
 
-  void _sendFogToUnity() {
-    if (!_unityReady || _unityController == null) return;
-    final polys = _buildingPolygons.values.expand((v) => v).map((geoPoly) {
-      return geoPoly.map((pt) => {'lng': pt[0], 'lat': pt[1]}).toList();
-    }).toList();
-    final centers = _pins.map((p) => {'lat': p.lat, 'lng': p.lng}).toList();
-    _unityController!.postMessage(
-      'FogController',
-      'UpdateFog',
-      jsonEncode({'polygons': polys, 'centers': centers}),
-    );
-  }
 
   void _scheduleFogUpdate() {
     _fogUpdateTimer?.cancel();
-    _fogUpdateTimer = Timer(const Duration(milliseconds: 200), _updateFogOverlay);
+    _fogUpdateTimer = Timer(const Duration(milliseconds: 200), _sendFogToUnityWithScreenCoords);
   }
 
-  Future<void> _updateFogOverlay() async {
-    if (_mapboxMap == null) return;
+  Future<void> _sendFogToUnityWithScreenCoords() async {
+    if (!_unityReady || _unityController == null || _mapboxMap == null) return;
 
-    if (_buildingPolygons.isEmpty) {
-      if (mounted) setState(() { _fogPolygonsScreen = []; _fogCentersScreen = []; });
-      return;
-    }
+    // 화면 크기
+    final size = MediaQuery.of(context).size;
+    final sw = size.width;
+    final sh = size.height;
 
-    final screenPolys = <List<Offset>>[];
+    // 폴리곤을 화면 픽셀(0~1 정규화)로 변환
+    final screenPolys = <List<Map<String, double>>>[];
     for (final polys in _buildingPolygons.values) {
       for (final poly in polys) {
-        final screenPoly = <Offset>[];
+        final screenPoly = <Map<String, double>>[];
         for (final pt in poly) {
           try {
             final px = await _mapboxMap!.pixelForCoordinate(
               Point(coordinates: Position(pt[0], pt[1])),
             );
-            screenPoly.add(Offset(px.x, px.y));
+            screenPoly.add({'x': px.x / sw, 'y': px.y / sh});
           } catch (_) {}
         }
         if (screenPoly.length >= 3) screenPolys.add(screenPoly);
       }
     }
 
-    final screenCenters = <Offset>[];
+    // 핀 중심도 정규화 좌표로
+    final screenCenters = <Map<String, double>>[];
     for (final pin in _pins) {
       try {
         final px = await _mapboxMap!.pixelForCoordinate(
           Point(coordinates: Position(pin.lng, pin.lat)),
         );
-        screenCenters.add(Offset(px.x, px.y));
+        screenCenters.add({'x': px.x / sw, 'y': px.y / sh});
       } catch (_) {}
     }
 
-    if (mounted) {
-      setState(() {
-        _fogPolygonsScreen = screenPolys;
-        _fogCentersScreen = screenCenters;
-      });
-    }
+    _unityController!.postMessage(
+      'FogController',
+      'UpdateFog',
+      jsonEncode({'polygons': screenPolys, 'centers': screenCenters}),
+    );
   }
 
   @override
@@ -691,7 +675,6 @@ out geom;
           await _queryStreetBuildings(gpsPos.latitude, gpsPos.longitude);
       _buildingPolygons[pin.id] = polygons;
       await _savePolygons();
-      _sendFogToUnity();
       _scheduleFogUpdate();
     } catch (e) {
       if (mounted) {
@@ -845,16 +828,6 @@ out geom;
             key: const ValueKey('map'),
             styleUri: _styleUri,
             onMapCreated: _onMapCreated,
-          ),
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: GradientFogPainter(
-                  polygons: _fogPolygonsScreen,
-                  centers: _fogCentersScreen,
-                ),
-              ),
-            ),
           ),
           Positioned.fill(
             child: IgnorePointer(
