@@ -1,15 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart';
-import 'fog_painter.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:image_picker/image_picker.dart' as img_picker;
 import 'package:exif/exif.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
 import 'package:permission_handler/permission_handler.dart';
+import 'package:http/http.dart' as http;
+import 'package:flutter_unity_widget/flutter_unity_widget.dart';
 import 'dart:convert';
 import 'dart:async';
-import 'dart:ui' show ImageByteFormat, PictureRecorder;
+import 'dart:ui' as ui;
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:math' as math;
@@ -48,15 +48,6 @@ class CapsulePin {
   );
 }
 
-// ignore: deprecated_member_use
-class _AnnotationTapListener implements OnPointAnnotationClickListener {
-  final void Function(PointAnnotation) onTap;
-  _AnnotationTapListener(this.onTap);
-
-  @override
-  void onPointAnnotationClick(PointAnnotation annotation) => onTap(annotation);
-}
-
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
 
@@ -64,214 +55,256 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => MapScreenState();
 }
 
+// ignore: deprecated_member_use
 class MapScreenState extends State<MapScreen>
-    with AutomaticKeepAliveClientMixin {
-  static const String _token = String.fromEnvironment('MAPBOX_ACCESS_TOKEN');
+    with AutomaticKeepAliveClientMixin
+    // ignore: deprecated_member_use
+    implements OnPointAnnotationClickListener {
   static const String _prefsKey = 'capsule_pins';
-  static const String _polygonsKey = 'capsule_polygons';
+  static const String _polygonsKey = 'capsule_polygons_v11';
+  static const String _styleUri = 'mapbox://styles/mapbox/streets-v12';
 
-  MapboxMap? _map;
-  PointAnnotationManager? _pinManager;
-  PointAnnotationManager? _myLocManager;
-  PointAnnotation? _myLocMarker;
+  MapboxMap? _mapboxMap;
+  PointAnnotationManager? _annotationManager;
+  UnityWidgetController? _unityController;
+  bool _unityReady = false;
+
+  final Map<String, PointAnnotation> _annotationMap = {};
+  final Map<String, String> _annotationIdToPinId = {};
+  PointAnnotation? _myLocAnnotation;
 
   final List<CapsulePin> _pins = [];
-  final Map<String, String> _markerMap = {};
-  final Map<String, List<List<double>>> _buildingPolygons = {};
+  final Map<String, List<List<List<double>>>> _buildingPolygons = {};
   final img_picker.ImagePicker _picker = img_picker.ImagePicker();
   StreamSubscription<geo.Position>? _posSub;
 
   bool _isLoading = false;
-  bool _tapListenerRegistered = false;
-
-  List<HoleShape> _fogHoles = [];
-  Timer? _fogDebounce;
+  Timer? _fogUpdateTimer;
 
   @override
   bool get wantKeepAlive => true;
 
   @override
-  void initState() {
-    super.initState();
-    MapboxOptions.setAccessToken(_token);
-  }
-
-  @override
   void dispose() {
     _posSub?.cancel();
-    _fogDebounce?.cancel();
+    _fogUpdateTimer?.cancel();
+    _unityController?.dispose();
     super.dispose();
   }
 
-  // ── 안개 오버레이 (NightOverlayPainter) ──────────────────
-  Future<void> _refreshFogHoles() async {
-    if (_map == null || !mounted) return;
-    final holes = <HoleShape>[];
-    for (final polygon in _buildingPolygons.values) {
-      if (polygon.length < 3) continue;
-      final screenPts = <Offset>[];
-      for (final coord in polygon) {
-        try {
-          final sc = await _map!.pixelForCoordinate(
-            Point(coordinates: Position(coord[0], coord[1])),
-          );
-          screenPts.add(Offset(sc.x, sc.y));
-        } catch (_) {}
-      }
-      if (screenPts.length < 3) continue;
-      final cx = screenPts.map((p) => p.dx).reduce((a, b) => a + b) /
-          screenPts.length;
-      final cy = screenPts.map((p) => p.dy).reduce((a, b) => a + b) /
-          screenPts.length;
-      holes.add(HoleShape(center: Offset(cx, cy), polygon: screenPts));
-    }
-    if (mounted) setState(() => _fogHoles = holes);
+  // ── Unity callbacks ───────────────────────────────────────
+  void _onUnityCreated(UnityWidgetController controller) {
+    _unityController = controller;
   }
 
-  void _onCameraChanged(CameraChangedEventData _) {
-    _fogDebounce?.cancel();
-    _fogDebounce =
-        Timer(const Duration(milliseconds: 150), _refreshFogHoles);
+  void _onUnityMessage(dynamic message) {}
+
+  void _onUnitySceneLoaded(SceneLoaded? scene) {
+    _unityReady = true;
+    _scheduleFogUpdate();
   }
 
-  // ── OSM Overpass API ─────────────────────────────────────
-  List<List<double>>? _extractPolygon(Map<String, dynamic> body) {
-    final elements = body['elements'] as List?;
-    if (elements == null || elements.isEmpty) return null;
-
-    List<List<double>>? parseGeom(List geom) {
-      if (geom.length < 3) return null;
-      return geom.map((node) {
-        final n = node as Map;
-        return [(n['lon'] as num).toDouble(), (n['lat'] as num).toDouble()];
-      }).toList();
-    }
-
-    for (final el in elements) {
-      final map = el as Map;
-      final geom = map['geometry'] as List?;
-      if (geom != null) {
-        final poly = parseGeom(geom);
-        if (poly != null) return poly;
-      }
-      final members = map['members'] as List?;
-      if (members != null) {
-        for (final member in members) {
-          final m = member as Map;
-          if (m['role'] == 'outer') {
-            final mGeom = m['geometry'] as List?;
-            if (mGeom != null) {
-              final poly = parseGeom(mGeom);
-              if (poly != null) return poly;
-            }
-          }
-        }
-      }
-    }
-    return null;
+  void _scheduleFogUpdate() {
+    _fogUpdateTimer?.cancel();
+    _fogUpdateTimer = Timer(const Duration(milliseconds: 200), _sendFogToUnity);
   }
 
-  Future<void> _queryBuildingForPin(CapsulePin pin) async {
-    final lat = pin.lat, lng = pin.lng;
-
-    Future<Map<String, dynamic>?> overpassGet(String q) async {
-      final url = Uri.parse(
-        'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(q)}',
-      );
-      for (int attempt = 1; attempt <= 3; attempt++) {
-        try {
-          final res =
-              await http.get(url).timeout(const Duration(seconds: 15));
-          if (res.statusCode == 200) {
-            return jsonDecode(res.body) as Map<String, dynamic>;
-          }
-          if (res.statusCode == 429) {
-            await Future.delayed(Duration(seconds: attempt * 5));
-          } else {
-            break;
-          }
-        } catch (e) {
-          debugPrint('Overpass 오류: $e');
-          break;
-        }
-      }
-      return null;
-    }
+  Future<void> _sendFogToUnity() async {
+    if (!_unityReady || _unityController == null || _mapboxMap == null) return;
 
     try {
-      // 1단계: is_in으로 관광지/공원/대학/단지 경계
-      final areaQ =
-          '[out:json];is_in($lat,$lng)->.a;('
-          'way["tourism"](pivot.a);'
-          'way["leisure"="park"](pivot.a);'
-          'way["leisure"="nature_reserve"](pivot.a);'
-          'way["historic"](pivot.a);'
-          'way["amenity"="university"](pivot.a);'
-          'way["landuse"="residential"](pivot.a);'
-          'way["landuse"="apartments"](pivot.a);'
-          'relation["tourism"](pivot.a);'
-          'relation["leisure"="park"](pivot.a);'
-          ');out geom;';
-      final areaBody = await overpassGet(areaQ);
-      if (areaBody != null) {
-        final polygon = _extractPolygon(areaBody);
-        if (polygon != null) {
-          _buildingPolygons[pin.id] = polygon;
-          return;
-        }
-      }
-
-      // 2단계: 반경 50m 내 개별 건물
-      final buildingQ =
-          '[out:json];way["building"](around:50,$lat,$lng);out geom;';
-      final buildingBody = await overpassGet(buildingQ);
-      if (buildingBody != null) {
-        final polygon = _extractPolygon(buildingBody);
-        if (polygon != null) {
-          _buildingPolygons[pin.id] = polygon;
-          return;
-        }
-      }
-
-      // 3단계: 원형 fallback (반경 80m)
-      _buildingPolygons[pin.id] = _makeCirclePolygon(lat, lng, 80);
+      final cam = await _mapboxMap!.getCameraState();
+      final center = cam.center;
+      _unityController!.postMessage(
+        'FogController',
+        'UpdateCamera',
+        jsonEncode({
+          'lat': center.coordinates.lat.toDouble(),
+          'lng': center.coordinates.lng.toDouble(),
+          'zoom': cam.zoom,
+        }),
+      );
     } catch (e) {
-      debugPrint('건물 쿼리 오류: $e');
-      _buildingPolygons[pin.id] = _makeCirclePolygon(lat, lng, 80);
+      debugPrint('UpdateCamera 오류: $e');
+    }
+
+    final polys = _buildingPolygons.values.expand((v) => v).map((poly) {
+      return poly.map((pt) => {'lat': pt[1], 'lng': pt[0]}).toList();
+    }).toList();
+    final centers = _pins.map((p) => {'lat': p.lat, 'lng': p.lng}).toList();
+
+    _unityController!.postMessage(
+      'FogController',
+      'UpdateFog',
+      jsonEncode({'polygons': polys, 'centers': centers}),
+    );
+  }
+
+  @override
+  // ignore: deprecated_member_use
+  bool onPointAnnotationClick(PointAnnotation annotation) {
+    final pinId = _annotationIdToPinId[annotation.id];
+    if (pinId == null || pinId.isEmpty) return true;
+    final p = _pins.firstWhere(
+      (p) => p.id == pinId,
+      orElse: () => CapsulePin(id: '', lat: 0, lng: 0, title: ''),
+    );
+    if (p.id.isNotEmpty) _showPinSheet(p);
+    return true;
+  }
+
+  // ── Overpass / polygon helpers ────────────────────────────
+  Future<List<List<List<double>>>> _queryStreetBuildings(
+      double lat, double lng) async {
+    final campusWayQuery = '''
+[out:json];
+is_in($lat,$lng)->.a;
+(
+  way(pivot.a)["amenity"~"university|college|school|hospital|kindergarten"];
+  way(pivot.a)["landuse"~"education|university"];
+);
+out geom;
+''';
+    final campusWay = await _fetchPolygons(campusWayQuery, tag: 'campusWay');
+    if (campusWay.isNotEmpty) return campusWay;
+
+    final campusRelQuery = '''
+[out:json];
+is_in($lat,$lng)->.a;
+(
+  rel(pivot.a)["amenity"~"university|college|school|hospital|kindergarten"];
+  rel(pivot.a)["landuse"~"education|university"];
+)->.r;
+way(r:"outer");
+out geom;
+''';
+    final campusRel = await _fetchPolygons(campusRelQuery, tag: 'campusRel');
+    if (campusRel.isNotEmpty) return campusRel;
+
+    final nearbyQuery = '''
+[out:json];
+(
+  way["amenity"~"university|college|school|hospital"](around:300,$lat,$lng);
+  way["landuse"~"education|university"](around:300,$lat,$lng);
+);
+out geom;
+''';
+    final nearbyBoundary =
+        await _fetchPolygons(nearbyQuery, tag: 'nearbyBoundary');
+    if (nearbyBoundary.isNotEmpty) return nearbyBoundary;
+
+    final aptQuery = '''
+[out:json];
+is_in($lat,$lng)->.a;
+(
+  way(pivot.a)["landuse"~"residential"]["name"];
+  way(pivot.a)["building"~"apartments"]["name"];
+);
+out geom;
+''';
+    final aptBoundary = await _fetchPolygons(aptQuery, tag: 'apt');
+    if (aptBoundary.isNotEmpty) return aptBoundary;
+
+    final streetQuery = '''
+[out:json];
+way(around:60,$lat,$lng)["highway"]["name"]->.street;
+way["building"](around.street:40);
+out geom;
+''';
+    final streetBuildings =
+        await _fetchPolygons(streetQuery, tag: 'street', maxSizeMeters: 200);
+    if (streetBuildings.isNotEmpty) return streetBuildings;
+
+    final isInQuery =
+        '[out:json];is_in($lat,$lng)->.a;way["building"](pivot.a);out geom;';
+    final isInBuildings =
+        await _fetchPolygons(isInQuery, tag: 'isin', maxSizeMeters: 200);
+    if (isInBuildings.isNotEmpty) return isInBuildings;
+
+    return [_makeCirclePolygon(lat, lng, 25)];
+  }
+
+  Future<List<List<List<double>>>> _fetchPolygons(String query,
+      {String tag = '', double? maxSizeMeters}) async {
+    try {
+      final url = Uri.parse(
+        'https://overpass-api.de/api/interpreter?data=${Uri.encodeComponent(query)}',
+      );
+      final res = await http.get(url, headers: {
+        'User-Agent': 'tori-capsule/1.0 (Flutter)',
+        'Accept': 'application/json',
+      }).timeout(const Duration(seconds: 25));
+      if (res.statusCode != 200) return [];
+      final elements =
+          (jsonDecode(res.body) as Map)['elements'] as List? ?? [];
+
+      final polys = <List<List<double>>>[];
+      for (final el in elements) {
+        final geom = (el as Map)['geometry'] as List?;
+        if (geom == null || geom.length < 3) continue;
+        final poly = geom
+            .map((n) => [
+                  (n['lon'] as num).toDouble(),
+                  (n['lat'] as num).toDouble(),
+                ])
+            .toList();
+        if (maxSizeMeters != null && _polyBboxMeters(poly) > maxSizeMeters) {
+          continue;
+        }
+        polys.add(_simplifyPolygon(poly,
+            max: maxSizeMeters == null ? 64 : 28));
+      }
+      return polys;
+    } catch (e) {
+      debugPrint('Overpass[$tag] 오류: $e');
+      return [];
     }
   }
 
-  List<List<double>> _makeCirclePolygon(
-    double lat,
-    double lng,
-    double radiusMeters, {
-    int points = 36,
-  }) {
+  double _polyBboxMeters(List<List<double>> poly) {
+    double minLat = poly[0][1], maxLat = poly[0][1];
+    double minLng = poly[0][0], maxLng = poly[0][0];
+    for (final pt in poly) {
+      if (pt[1] < minLat) minLat = pt[1];
+      if (pt[1] > maxLat) maxLat = pt[1];
+      if (pt[0] < minLng) minLng = pt[0];
+      if (pt[0] > maxLng) maxLng = pt[0];
+    }
+    final dLat = (maxLat - minLat) * 111320;
+    final dLng =
+        (maxLng - minLng) * 111320 * math.cos(minLat * math.pi / 180);
+    return math.max(dLat, dLng);
+  }
+
+  List<List<double>> _simplifyPolygon(List<List<double>> poly,
+      {int max = 28}) {
+    if (poly.length <= max) return poly;
+    final step = poly.length / max;
+    return [for (int i = 0; i < max; i++) poly[(i * step).floor()]];
+  }
+
+  List<List<double>> _makeCirclePolygon(double lat, double lng,
+      double radiusMeters, {int points = 24}) {
     const mPerDegLat = 111320.0;
     final mPerDegLng = 111320.0 * math.cos(lat * math.pi / 180);
-    final ring = <List<double>>[];
-    for (int i = 0; i <= points; i++) {
-      final angle = 2 * math.pi * i / points;
-      final dlat = (radiusMeters * math.sin(angle)) / mPerDegLat;
-      final dlng = (radiusMeters * math.cos(angle)) / mPerDegLng;
-      ring.add([lng + dlng, lat + dlat]);
-    }
-    return ring;
+    return [
+      for (int i = 0; i <= points; i++)
+        [
+          lng + (radiusMeters * math.cos(2 * math.pi * i / points)) / mPerDegLng,
+          lat + (radiusMeters * math.sin(2 * math.pi * i / points)) / mPerDegLat,
+        ],
+    ];
   }
 
-  // ── 저장/불러오기 ─────────────────────────────────────────
-  Future<void> _savePins() async {
-    final prefs = await SharedPreferences.getInstance();
-    final list = _pins.map((p) => jsonEncode(p.toJson())).toList();
-    await prefs.setStringList(_prefsKey, list);
-  }
-
+  // ── Polygon save/load ─────────────────────────────────────
   Future<void> _savePolygons() async {
     final prefs = await SharedPreferences.getInstance();
-    final map = _buildingPolygons.map(
-      (id, coords) => MapEntry(id, jsonEncode(coords)),
+    await prefs.setString(
+      _polygonsKey,
+      jsonEncode(_buildingPolygons.map(
+        (id, polys) => MapEntry(id, jsonEncode(polys)),
+      )),
     );
-    await prefs.setString(_polygonsKey, jsonEncode(map));
   }
 
   Future<void> _loadPolygons() async {
@@ -281,15 +314,23 @@ class MapScreenState extends State<MapScreen>
       if (raw == null) return;
       final map = jsonDecode(raw) as Map<String, dynamic>;
       for (final entry in map.entries) {
-        final coords = (jsonDecode(entry.value as String) as List)
-            .map(
-              (c) =>
-                  (c as List).map((v) => (v as num).toDouble()).toList(),
-            )
+        final polys = (jsonDecode(entry.value as String) as List)
+            .map((poly) => (poly as List)
+                .map((c) =>
+                    (c as List).map((v) => (v as num).toDouble()).toList())
+                .toList())
+            .where((poly) => poly.length >= 3)
             .toList();
-        _buildingPolygons[entry.key] = coords;
+        if (polys.isNotEmpty) _buildingPolygons[entry.key] = polys;
       }
     } catch (_) {}
+  }
+
+  // ── Pin save/load ─────────────────────────────────────────
+  Future<void> _savePins() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+        _prefsKey, _pins.map((p) => jsonEncode(p.toJson())).toList());
   }
 
   Future<void> _loadPins() async {
@@ -299,61 +340,92 @@ class MapScreenState extends State<MapScreen>
     for (final raw in list) {
       try {
         final pin = CapsulePin.fromJson(
-          jsonDecode(raw) as Map<String, dynamic>,
-        );
+            jsonDecode(raw) as Map<String, dynamic>);
         if (pin.photoPath == null || File(pin.photoPath!).existsSync()) {
           _pins.add(pin);
           await _addMarkerToMap(pin);
-          if (!_buildingPolygons.containsKey(pin.id)) {
-            await Future.delayed(const Duration(seconds: 2));
-            await _queryBuildingForPin(pin);
-            await _savePolygons();
-          }
         }
       } catch (_) {}
     }
-    await _refreshFogHoles();
   }
 
   Future<void> _addMarkerToMap(CapsulePin pin) async {
-    _pinManager ??= await _map?.annotations.createPointAnnotationManager();
-    Uint8List markerImg;
+    if (_mapboxMap == null || _annotationManager == null) return;
+    final Uint8List markerImg;
     if (pin.photo != null && pin.photo!.existsSync()) {
       markerImg = await _makePhotoMarker(pin.photo!);
     } else {
       markerImg = await _makeDotImage(color: const Color(0xFF7B5EA7));
     }
-    final marker = await _pinManager?.create(
+    final annotation = await _annotationManager!.create(
       PointAnnotationOptions(
         geometry: Point(coordinates: Position(pin.lng, pin.lat)),
         image: markerImg,
         iconSize: 0.8,
       ),
     );
-    if (marker != null) _markerMap[pin.id] = marker.id;
-    _registerTapListener();
+    _annotationMap[pin.id] = annotation;
+    _annotationIdToPinId[annotation.id] = pin.id;
   }
 
-  // ── 지도 초기화 ───────────────────────────────────────────
-  Future<void> _onMapCreated(MapboxMap map) async {
-    _map = map;
-    map.gestures.updateSettings(
-      GesturesSettings(
-        rotateEnabled: true,
-        pinchToZoomEnabled: true,
-        scrollEnabled: true,
-        doubleTapToZoomInEnabled: true,
-        doubleTouchToZoomOutEnabled: true,
-        quickZoomEnabled: true,
-      ),
-    );
+  // ── Map init ──────────────────────────────────────────────
+  Future<void> _onMapCreated(MapboxMap mapboxMap) async {
+    _mapboxMap = mapboxMap;
+    _annotationManager =
+        await _mapboxMap!.annotations.createPointAnnotationManager();
+    // ignore: deprecated_member_use
+    _annotationManager!.addOnPointAnnotationClickListener(this);
     await _moveToMyLocation();
     _startTracking();
+    await _onStyleLoaded();
     await _loadPins();
+    _mapboxMap!.setOnCameraChangeListener((_) => _scheduleFogUpdate());
   }
 
-  Future<void> _onStyleLoaded(StyleLoadedEventData _) async {
-    await _refreshFogHoles();
+  Future<void> _onStyleLoaded() async {
+    await _refineBaseStyle();
+    await _add3DBuildings();
+  }
+
+  Future<void> _refineBaseStyle() async {
+    if (_mapboxMap == null) return;
+    for (final id in [
+      'building', 'building-top', 'building-outline',
+      'building-3d', 'building-fill', 'building-extrusion',
+    ]) {
+      try {
+        await _mapboxMap!.style.setStyleLayerProperty(id, 'visibility', 'none');
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _add3DBuildings() async {
+    if (_mapboxMap == null) return;
+    try {
+      await _mapboxMap!.style.addLayer(
+        FillExtrusionLayer(
+          id: 'building-3d-dark',
+          sourceId: 'composite',
+          sourceLayer: 'building',
+          fillExtrusionColor: 0xFF2A2520.toSigned(32),
+          fillExtrusionHeightExpression: [
+            'interpolate', ['linear'], ['zoom'],
+            14, 0,
+            14.5, ['*', ['number', ['get', 'height'], 8], 2],
+          ],
+          fillExtrusionBaseExpression: [
+            '*', ['number', ['get', 'min_height'], 0], 2,
+          ],
+          fillExtrusionOpacityExpression: [
+            'interpolate', ['linear'], ['zoom'],
+            14, 0.0,
+            15, 0.9,
+          ],
+        ),
+      );
+    } catch (e) {
+      debugPrint('3D 건물 오류: $e');
+    }
   }
 
   Future<void> _moveToMyLocation() async {
@@ -364,13 +436,13 @@ class MapScreenState extends State<MapScreen>
       }
       final pos = await geo.Geolocator.getCurrentPosition(
         locationSettings: const geo.LocationSettings(
-          accuracy: geo.LocationAccuracy.high,
-        ),
+            accuracy: geo.LocationAccuracy.high),
       );
-      _map?.flyTo(
+      await _mapboxMap?.flyTo(
         CameraOptions(
           center: Point(coordinates: Position(pos.longitude, pos.latitude)),
-          zoom: 14.0,
+          zoom: 16.0,
+          pitch: 45.0,
         ),
         MapAnimationOptions(duration: 1000),
       );
@@ -381,27 +453,30 @@ class MapScreenState extends State<MapScreen>
   }
 
   Future<void> _updateMyDot(double lat, double lng) async {
-    _myLocManager ??= await _map?.annotations.createPointAnnotationManager();
-    if (_myLocMarker != null) {
-      await _myLocManager?.delete(_myLocMarker!);
-      _myLocMarker = null;
+    if (_mapboxMap == null || _annotationManager == null) return;
+    final dotImg = await _makeDotImage(color: const Color(0xFF4A90E2));
+    if (_myLocAnnotation != null) {
+      _myLocAnnotation!.geometry = Point(coordinates: Position(lng, lat));
+      _myLocAnnotation!.image = dotImg;
+      await _annotationManager!.update(_myLocAnnotation!);
+    } else {
+      _myLocAnnotation = await _annotationManager!.create(
+        PointAnnotationOptions(
+          geometry: Point(coordinates: Position(lng, lat)),
+          image: dotImg,
+          iconSize: 1.0,
+        ),
+      );
     }
-    _myLocMarker = await _myLocManager?.create(
-      PointAnnotationOptions(
-        geometry: Point(coordinates: Position(lng, lat)),
-        image: await _makeDotImage(color: const Color(0xFF4A90E2)),
-        iconSize: 1.0,
-      ),
-    );
   }
 
   Future<Uint8List> _makeDotImage({required Color color}) async {
-    final rec = PictureRecorder();
+    final rec = ui.PictureRecorder();
     final c = Canvas(rec, const Rect.fromLTWH(0, 0, 40, 40));
     c.drawCircle(const Offset(20, 20), 18, Paint()..color = Colors.white);
     c.drawCircle(const Offset(20, 20), 13, Paint()..color = color);
     final img = await rec.endRecording().toImage(40, 40);
-    final d = await img.toByteData(format: ImageByteFormat.png);
+    final d = await img.toByteData(format: ui.ImageByteFormat.png);
     return d!.buffer.asUint8List();
   }
 
@@ -414,20 +489,13 @@ class MapScreenState extends State<MapScreen>
     ).listen((p) => _updateMyDot(p.latitude, p.longitude));
   }
 
-  // ── GPS EXIF 추출 ─────────────────────────────────────────
-  Future<(geo.Position?, String)> _extractGpsFromBytes(
-      Uint8List bytes) async {
+  Future<(geo.Position?, String)> _extractGpsFromBytes(Uint8List bytes) async {
     try {
       final data = await readExifFromBytes(bytes);
-      if (data.isEmpty) {
-        return (null, 'EXIF 데이터가 없어요. 카메라로 직접 찍은 사진을 써보세요.');
-      }
+      if (data.isEmpty) return (null, 'EXIF 데이터가 없어요.');
       if (!data.containsKey('GPS GPSLatitude') ||
           !data.containsKey('GPS GPSLongitude')) {
-        return (
-          null,
-          'GPS 정보가 없어요. 카메라 설정에서 "위치 태그"를 켜고 직접 찍은 사진을 써보세요.',
-        );
+        return (null, 'GPS 정보가 없어요. 카메라 설정에서 위치 태그를 켜주세요.');
       }
 
       double? parseDMS(IfdTag tag) {
@@ -450,16 +518,10 @@ class MapScreenState extends State<MapScreen>
 
       return (
         geo.Position(
-          latitude: lat,
-          longitude: lng,
+          latitude: lat, longitude: lng,
           timestamp: DateTime.now(),
-          accuracy: 0,
-          altitude: 0,
-          altitudeAccuracy: 0,
-          heading: 0,
-          headingAccuracy: 0,
-          speed: 0,
-          speedAccuracy: 0,
+          accuracy: 0, altitude: 0, altitudeAccuracy: 0,
+          heading: 0, headingAccuracy: 0, speed: 0, speedAccuracy: 0,
         ),
         '',
       );
@@ -494,18 +556,16 @@ class MapScreenState extends State<MapScreen>
 
   Future<Uint8List> _makePhotoMarker(File photo) async {
     final bytes = await photo.readAsBytes();
-    // EXIF orientation 읽기
     final exifData = await readExifFromBytes(bytes);
     int orientation = 1;
     final orientTag = exifData['Image Orientation'];
     if (orientTag != null) {
-      orientation =
-          int.tryParse(orientTag.printable.split(' ').first) ?? 1;
+      orientation = int.tryParse(orientTag.printable.split(' ').first) ?? 1;
     }
 
     final image = await decodeImageFromList(bytes);
     const double sz = 140, pad = 10;
-    final rec = PictureRecorder();
+    final rec = ui.PictureRecorder();
     final c = Canvas(rec, Rect.fromLTWH(0, 0, sz, sz + 20));
 
     final tail = Path()
@@ -514,19 +574,12 @@ class MapScreenState extends State<MapScreen>
       ..lineTo(sz / 2 + 10, sz - 4)
       ..close();
     c.drawPath(tail, Paint()..color = const Color(0xFF7B5EA7));
-    c.drawCircle(
-      Offset(sz / 2, sz / 2),
-      sz / 2 - 2,
-      Paint()..color = const Color(0xFF7B5EA7),
-    );
-    c.clipPath(
-      Path()..addOval(
-        Rect.fromCircle(
-            center: Offset(sz / 2, sz / 2), radius: sz / 2 - pad),
-      ),
-    );
+    c.drawCircle(Offset(sz / 2, sz / 2), sz / 2 - 2,
+        Paint()..color = const Color(0xFF7B5EA7));
+    c.clipPath(Path()
+      ..addOval(Rect.fromCircle(
+          center: Offset(sz / 2, sz / 2), radius: sz / 2 - pad)));
 
-    // EXIF 회전 보정 적용
     c.save();
     c.translate(sz / 2, sz / 2);
     if (orientation == 3) {
@@ -542,42 +595,18 @@ class MapScreenState extends State<MapScreen>
     final ms = math.min(sw, sh);
     c.drawImageRect(
       image,
-      Rect.fromCenter(
-          center: Offset(sw / 2, sh / 2), width: ms, height: ms),
+      Rect.fromCenter(center: Offset(sw / 2, sh / 2), width: ms, height: ms),
       Rect.fromLTWH(pad, pad, sz - pad * 2, sz - pad * 2),
       Paint(),
     );
     c.restore();
 
-    final out =
-        await rec.endRecording().toImage(sz.toInt(), (sz + 20).toInt());
-    final d = await out.toByteData(format: ImageByteFormat.png);
+    final out = await rec.endRecording().toImage(sz.toInt(), (sz + 20).toInt());
+    final d = await out.toByteData(format: ui.ImageByteFormat.png);
     return d!.buffer.asUint8List();
   }
 
-  void _registerTapListener() {
-    if (_tapListenerRegistered || _pinManager == null) return;
-    // ignore: deprecated_member_use
-    _pinManager!.addOnPointAnnotationClickListener(
-      _AnnotationTapListener((PointAnnotation tapped) {
-        final pinId = _markerMap.entries
-            .firstWhere(
-              (e) => e.value == tapped.id,
-              orElse: () => const MapEntry('', ''),
-            )
-            .key;
-        if (pinId.isEmpty) return;
-        final p = _pins.firstWhere(
-          (p) => p.id == pinId,
-          orElse: () => CapsulePin(id: '', lat: 0, lng: 0, title: ''),
-        );
-        if (p.id.isNotEmpty) _showPinSheet(p);
-      }),
-    );
-    _tapListenerRegistered = true;
-  }
-
-  // ── 사진 추가 ─────────────────────────────────────────────
+  // ── Add photo pin ─────────────────────────────────────────
   Future<void> addPhotoPin() async {
     if (!await Permission.accessMediaLocation.isGranted) {
       await Permission.accessMediaLocation.request();
@@ -609,8 +638,7 @@ class MapScreenState extends State<MapScreen>
         }
         gpsPos = await geo.Geolocator.getCurrentPosition(
           locationSettings: const geo.LocationSettings(
-            accuracy: geo.LocationAccuracy.high,
-          ),
+              accuracy: geo.LocationAccuracy.high),
         );
       }
 
@@ -625,11 +653,10 @@ class MapScreenState extends State<MapScreen>
       await _addMarkerToMap(pin);
       await _savePins();
 
-      await _map?.flyTo(
+      await _mapboxMap?.flyTo(
         CameraOptions(
           center: Point(
-            coordinates: Position(gpsPos.longitude, gpsPos.latitude),
-          ),
+              coordinates: Position(gpsPos.longitude, gpsPos.latitude)),
           zoom: 18.5,
           pitch: 65.0,
           bearing: 0.0,
@@ -637,19 +664,33 @@ class MapScreenState extends State<MapScreen>
         MapAnimationOptions(duration: 1800),
       );
 
-      await Future.delayed(const Duration(milliseconds: 1000));
-      await _queryBuildingForPin(pin);
+      final polygons =
+          await _queryStreetBuildings(gpsPos.latitude, gpsPos.longitude);
+      _buildingPolygons[pin.id] = polygons;
       await _savePolygons();
-      await _refreshFogHoles();
+      _scheduleFogUpdate();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('오류: $e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('오류: $e')));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _deletePin(CapsulePin pin) async {
+    final annotation = _annotationMap[pin.id];
+    if (annotation != null && _annotationManager != null) {
+      await _annotationManager!.delete(annotation);
+      _annotationIdToPinId.remove(annotation.id);
+      _annotationMap.remove(pin.id);
+    }
+    _pins.removeWhere((p) => p.id == pin.id);
+    _buildingPolygons.remove(pin.id);
+    await _savePins();
+    await _savePolygons();
+    _scheduleFogUpdate();
   }
 
   void _showPinSheet(CapsulePin pin) {
@@ -678,28 +719,90 @@ class MapScreenState extends State<MapScreen>
             if (pin.photo != null && pin.photo!.existsSync())
               ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: Image.file(
-                  pin.photo!,
-                  height: 200,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                ),
+                child: Image.file(pin.photo!,
+                    height: 200, width: double.infinity, fit: BoxFit.cover),
               ),
             const SizedBox(height: 16),
             Text(
               pin.title,
               style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF2E2B2A),
-              ),
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF2E2B2A)),
             ),
             const SizedBox(height: 8),
             Text(
               '📍 ${pin.lat.toStringAsFixed(5)}, ${pin.lng.toStringAsFixed(5)}',
               style: const TextStyle(color: Color(0xFF7A756D), fontSize: 13),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _mapboxMap?.flyTo(
+                        CameraOptions(
+                          center: Point(
+                              coordinates: Position(pin.lng, pin.lat)),
+                          zoom: 18.5,
+                          pitch: 60.0,
+                        ),
+                        MapAnimationOptions(duration: 1000),
+                      );
+                    },
+                    icon: const Icon(Icons.my_location, size: 18),
+                    label: const Text('위치로 이동'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF7B5EA7),
+                      side: const BorderSide(color: Color(0xFF7B5EA7)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        builder: (_) => AlertDialog(
+                          title: const Text('캡슐 삭제'),
+                          content:
+                              const Text('이 타임캡슐을 삭제할까요?\n안개도 다시 덮입니다.'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text('취소'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              child: const Text('삭제',
+                                  style: TextStyle(color: Colors.red)),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirm == true && mounted) {
+                        Navigator.pop(context);
+                        await _deletePin(pin);
+                      }
+                    },
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    label: const Text('삭제'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                      side: const BorderSide(color: Colors.red),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
           ],
         ),
       ),
@@ -709,27 +812,25 @@ class MapScreenState extends State<MapScreen>
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    MapboxOptions.setAccessToken(
+      const String.fromEnvironment('MAPBOX_TOKEN'),
+    );
     return Scaffold(
       body: Stack(
         children: [
           MapWidget(
-            key: const ValueKey('capsule_map'),
-            styleUri: MapboxStyles.STANDARD,
-            cameraOptions: CameraOptions(
-              center: Point(coordinates: Position(127.2890, 36.4800)),
-              zoom: 6.0,
-            ),
+            key: const ValueKey('map'),
+            styleUri: _styleUri,
             onMapCreated: _onMapCreated,
-            onStyleLoadedListener: _onStyleLoaded,
-            onCameraChangeListener: _onCameraChanged,
           ),
           Positioned.fill(
             child: IgnorePointer(
-              child: CustomPaint(
-                painter: NightOverlayPainter(
-                  holes: _fogHoles,
-                  circleRadius: 150,
-                ),
+              child: UnityWidget(
+                onUnityCreated: _onUnityCreated,
+                onUnityMessage: _onUnityMessage,
+                onUnitySceneLoaded: _onUnitySceneLoaded,
+                useAndroidViewSurface: true,
+                fullscreen: false,
               ),
             ),
           ),
@@ -784,20 +885,11 @@ class _MapFab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: backgroundColor,
-      borderRadius: BorderRadius.circular(16),
-      elevation: 4,
-      shadowColor: Colors.black26,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onPressed,
-        child: SizedBox(
-          width: 56,
-          height: 56,
-          child: Icon(icon, color: iconColor, size: 24),
-        ),
-      ),
+    return FloatingActionButton(
+      heroTag: heroTag,
+      backgroundColor: backgroundColor,
+      onPressed: onPressed,
+      child: Icon(icon, color: iconColor),
     );
   }
 }
