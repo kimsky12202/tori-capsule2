@@ -106,49 +106,39 @@ class MapScreenState extends State<MapScreen>
 
   void _scheduleFogUpdate() {
     _fogUpdateTimer?.cancel();
-    _fogUpdateTimer = Timer(const Duration(milliseconds: 200), _sendFogToUnityWithScreenCoords);
+    _fogUpdateTimer = Timer(const Duration(milliseconds: 200), _sendFogToUnity);
   }
 
-  Future<void> _sendFogToUnityWithScreenCoords() async {
+  Future<void> _sendFogToUnity() async {
     if (!_unityReady || _unityController == null || _mapboxMap == null) return;
 
-    // 화면 크기
-    final size = MediaQuery.of(context).size;
-    final sw = size.width;
-    final sh = size.height;
-
-    // 폴리곤을 화면 픽셀(0~1 정규화)로 변환
-    final screenPolys = <List<Map<String, double>>>[];
-    for (final polys in _buildingPolygons.values) {
-      for (final poly in polys) {
-        final screenPoly = <Map<String, double>>[];
-        for (final pt in poly) {
-          try {
-            final px = await _mapboxMap!.pixelForCoordinate(
-              Point(coordinates: Position(pt[0], pt[1])),
-            );
-            screenPoly.add({'x': px.x / sw, 'y': px.y / sh});
-          } catch (_) {}
-        }
-        if (screenPoly.length >= 3) screenPolys.add(screenPoly);
-      }
+    // 현재 카메라 상태를 Unity에 전송 (GeoToUV 계산에 필요)
+    try {
+      final cam = await _mapboxMap!.getCameraState();
+      final center = cam.center;
+      _unityController!.postMessage(
+        'FogController',
+        'UpdateCamera',
+        jsonEncode({
+          'lat': center.coordinates.lat.toDouble(),
+          'lng': center.coordinates.lng.toDouble(),
+          'zoom': cam.zoom,
+        }),
+      );
+    } catch (e) {
+      debugPrint('UpdateCamera 오류: $e');
     }
 
-    // 핀 중심도 정규화 좌표로
-    final screenCenters = <Map<String, double>>[];
-    for (final pin in _pins) {
-      try {
-        final px = await _mapboxMap!.pixelForCoordinate(
-          Point(coordinates: Position(pin.lng, pin.lat)),
-        );
-        screenCenters.add({'x': px.x / sw, 'y': px.y / sh});
-      } catch (_) {}
-    }
+    // 폴리곤과 핀 중심을 geo 좌표로 전송
+    final polys = _buildingPolygons.values.expand((v) => v).map((poly) {
+      return poly.map((pt) => {'lat': pt[1], 'lng': pt[0]}).toList();
+    }).toList();
+    final centers = _pins.map((p) => {'lat': p.lat, 'lng': p.lng}).toList();
 
     _unityController!.postMessage(
       'FogController',
       'UpdateFog',
-      jsonEncode({'polygons': screenPolys, 'centers': screenCenters}),
+      jsonEncode({'polygons': polys, 'centers': centers}),
     );
   }
 
@@ -697,7 +687,6 @@ out geom;
     _buildingPolygons.remove(pin.id);
     await _savePins();
     await _savePolygons();
-    _sendFogToUnity();
     _scheduleFogUpdate();
   }
 
