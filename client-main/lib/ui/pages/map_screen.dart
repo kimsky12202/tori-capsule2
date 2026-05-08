@@ -13,6 +13,7 @@ import 'dart:ui' as ui;
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:math' as math;
+import 'fog_painter.dart';
 
 class CapsulePin {
   final String id;
@@ -80,12 +81,17 @@ class MapScreenState extends State<MapScreen>
 
   bool _isLoading = false;
 
+  List<List<Offset>> _fogPolygonsScreen = [];
+  List<Offset> _fogCentersScreen = [];
+  Timer? _fogUpdateTimer;
+
   @override
   bool get wantKeepAlive => true;
 
   @override
   void dispose() {
     _posSub?.cancel();
+    _fogUpdateTimer?.cancel();
     _unityController?.dispose();
     super.dispose();
   }
@@ -113,6 +119,53 @@ class MapScreenState extends State<MapScreen>
       'UpdateFog',
       jsonEncode({'polygons': polys, 'centers': centers}),
     );
+  }
+
+  void _scheduleFogUpdate() {
+    _fogUpdateTimer?.cancel();
+    _fogUpdateTimer = Timer(const Duration(milliseconds: 200), _updateFogOverlay);
+  }
+
+  Future<void> _updateFogOverlay() async {
+    if (_mapboxMap == null) return;
+
+    if (_buildingPolygons.isEmpty) {
+      if (mounted) setState(() { _fogPolygonsScreen = []; _fogCentersScreen = []; });
+      return;
+    }
+
+    final screenPolys = <List<Offset>>[];
+    for (final polys in _buildingPolygons.values) {
+      for (final poly in polys) {
+        final screenPoly = <Offset>[];
+        for (final pt in poly) {
+          try {
+            final px = await _mapboxMap!.pixelForCoordinate(
+              Point(coordinates: Position(pt[0], pt[1])),
+            );
+            screenPoly.add(Offset(px.x, px.y));
+          } catch (_) {}
+        }
+        if (screenPoly.length >= 3) screenPolys.add(screenPoly);
+      }
+    }
+
+    final screenCenters = <Offset>[];
+    for (final pin in _pins) {
+      try {
+        final px = await _mapboxMap!.pixelForCoordinate(
+          Point(coordinates: Position(pin.lng, pin.lat)),
+        );
+        screenCenters.add(Offset(px.x, px.y));
+      } catch (_) {}
+    }
+
+    if (mounted) {
+      setState(() {
+        _fogPolygonsScreen = screenPolys;
+        _fogCentersScreen = screenCenters;
+      });
+    }
   }
 
   @override
@@ -354,6 +407,7 @@ out geom;
     _startTracking();
     await _onStyleLoaded();
     await _loadPins();
+    _mapboxMap!.setOnCameraChangeListener((_) => _scheduleFogUpdate());
   }
 
   Future<void> _onStyleLoaded() async {
@@ -638,6 +692,7 @@ out geom;
       _buildingPolygons[pin.id] = polygons;
       await _savePolygons();
       _sendFogToUnity();
+      _scheduleFogUpdate();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -660,6 +715,7 @@ out geom;
     await _savePins();
     await _savePolygons();
     _sendFogToUnity();
+    _scheduleFogUpdate();
   }
 
   void _showPinSheet(CapsulePin pin) {
@@ -789,6 +845,16 @@ out geom;
             key: const ValueKey('map'),
             styleUri: _styleUri,
             onMapCreated: _onMapCreated,
+          ),
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: GradientFogPainter(
+                  polygons: _fogPolygonsScreen,
+                  centers: _fogCentersScreen,
+                ),
+              ),
+            ),
           ),
           Positioned.fill(
             child: IgnorePointer(
