@@ -24,10 +24,13 @@ android {
         applicationId = "com.example.login_test"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = 23
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -41,4 +44,11 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    val unityLibraryDir = file("../unityLibrary")
+    if (unityLibraryDir.exists()) {
+        implementation(project(":unityLibrary"))
+    }
 }
