@@ -38,4 +38,13 @@ val unityLibraryDir = file("unityLibrary/unityLibrary")
 if (unityLibraryDir.exists()) {
     include(":unityLibrary")
     project(":unityLibrary").projectDir = unityLibraryDir
+
+    // unityLibrary의 AAR 파일을 모든 프로젝트에서 찾을 수 있도록 등록
+    gradle.allprojects {
+        repositories {
+            flatDir {
+                dirs("${rootDir}/unityLibrary/unityLibrary/libs")
+            }
+        }
+    }
 }
