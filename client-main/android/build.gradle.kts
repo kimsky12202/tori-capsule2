@@ -42,10 +42,19 @@ gradle.projectsEvaluated {
     rootProject.findProject(":unityLibrary")?.let { unityLib ->
         val implConfig = unityLib.configurations.findByName("implementation") ?: return@let
         val compileOnly = unityLib.configurations.findByName("compileOnly")
-        val conflictingPrefixes = listOf("common-ndk27", "common-0.", "loader-", "logger-")
+        // Match all flat-file Mapbox deps Unity bundles in libs/.
+        // These have no Maven group (group == null/empty) and conflict with the
+        // newer versions that mapbox_maps_flutter pulls in from Maven Central.
+        // Keep unity-* and classes files as implementation so the Unity runtime works.
         val toMove = implConfig.dependencies
             .filterIsInstance<org.gradle.api.artifacts.ExternalModuleDependency>()
-            .filter { dep -> conflictingPrefixes.any { dep.name.startsWith(it) } }
+            .filter { dep ->
+                val g = dep.group ?: ""
+                val n = dep.name
+                g.isEmpty() &&
+                !n.startsWith("unity-") &&
+                n != "classes"
+            }
             .toList()
         toMove.forEach { dep ->
             implConfig.dependencies.remove(dep)
