@@ -36,29 +36,50 @@ gradle.projectsEvaluated {
         }
     }
 
-    // Fix 2: Move conflicting flat-file Mapbox AARs bundled by Unity from
-    // `implementation` to `compileOnly` inside the unityLibrary project so they
-    // are not packaged into the APK (mapbox_maps_flutter provides a newer version).
+    // Fix 2: Move conflicting Mapbox deps from `implementation` to `compileOnly`
+    // in the unityLibrary project so they are not packaged into the APK.
+    // mapbox_maps_flutter provides the newer compatible versions at runtime.
     rootProject.findProject(":unityLibrary")?.let { unityLib ->
         val implConfig = unityLib.configurations.findByName("implementation") ?: return@let
         val compileOnly = unityLib.configurations.findByName("compileOnly")
-        // Match all flat-file Mapbox deps Unity bundles in libs/.
-        // These have no Maven group (group == null/empty) and conflict with the
-        // newer versions that mapbox_maps_flutter pulls in from Maven Central.
-        // Keep unity-* and classes files as implementation so the Unity runtime works.
-        val toMove = implConfig.dependencies
+
+        // Fix 2a: Named AARs – ExternalModuleDependency with no Maven group
+        // (e.g. implementation(name:'common-ndk27-24.10.0', ext:'aar'))
+        val externalToMove = implConfig.dependencies
             .filterIsInstance<org.gradle.api.artifacts.ExternalModuleDependency>()
-            .filter { dep ->
-                val g = dep.group ?: ""
-                val n = dep.name
-                g.isEmpty() &&
-                !n.startsWith("unity-") &&
-                n != "classes"
-            }
+            .filter { dep -> (dep.group ?: "").isEmpty() && !dep.name.startsWith("unity-") && dep.name != "classes" }
             .toList()
-        toMove.forEach { dep ->
+        externalToMove.forEach { dep ->
             implConfig.dependencies.remove(dep)
             compileOnly?.dependencies?.add(dep)
+        }
+
+        // Fix 2b: fileTree JARs – FileCollectionDependency
+        // Unity puts all JARs via: implementation fileTree(dir:'libs', include:['*.jar'])
+        // Split each fileTree into conflicting Mapbox JARs (→ compileOnly) and
+        // everything else (kept as implementation so the Unity runtime still works).
+        val mapboxJarPatterns = listOf(
+            Regex("annotations-.*\\.jar"),
+            Regex("mapbox-sdk-geojson-.*\\.jar"),
+            Regex("mapbox-sdk-turf-.*\\.jar"),
+            Regex("mapbox-sdk-services-.*\\.jar"),
+        )
+        val fileCollectionDeps = implConfig.dependencies
+            .filterIsInstance<org.gradle.api.artifacts.FileCollectionDependency>()
+            .toList()
+        fileCollectionDeps.forEach { dep ->
+            try {
+                val all = dep.files.files.toList()
+                val conflicting = all.filter { f -> mapboxJarPatterns.any { p -> p.matches(f.name) } }
+                if (conflicting.isNotEmpty()) {
+                    val keep = all - conflicting.toSet()
+                    implConfig.dependencies.remove(dep)
+                    if (keep.isNotEmpty()) {
+                        implConfig.dependencies.add(unityLib.dependencies.create(unityLib.files(*keep.toTypedArray())))
+                    }
+                    compileOnly?.dependencies?.add(unityLib.dependencies.create(unityLib.files(*conflicting.toTypedArray())))
+                }
+            } catch (_: Exception) {}
         }
     }
 }
