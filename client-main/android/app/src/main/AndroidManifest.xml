@@ -37,6 +37,13 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- flutter_unity_widget: Unity Activity -->
+        <activity
+            android:name="com.xraph.plugin.flutter_unity_widget.OverrideUnityActivity"
+            android:theme="@style/UnityThemeSelector"
+            android:hardwareAccelerated="true"
+            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale|layoutDirection|density"
+            android:screenOrientation="fullSensor" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
