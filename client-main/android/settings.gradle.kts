@@ -34,7 +34,7 @@ plugins {
 include(":app")
 
 // Unity 라이브러리 - Unity Export 후 android/unityLibrary 폴더가 생성되면 활성화됨
-val unityLibraryDir = file("unityLibrary")
+val unityLibraryDir = file("unityLibrary/unityLibrary")
 if (unityLibraryDir.exists()) {
     include(":unityLibrary")
     project(":unityLibrary").projectDir = unityLibraryDir
