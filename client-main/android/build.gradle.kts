@@ -19,36 +19,30 @@ subprojects {
     project.evaluationDependsOn(":app")
 }
 
-// Provide unity-classes.jar as compileOnly to every subproject that declares a compileOnly
-// configuration. This lets flutter_unity_widget resolve UnityPlayer /
-// IUnityPlayerLifecycleEvents without coupling to the project name or evaluation order.
-subprojects {
-    afterEvaluate {
-        if (configurations.findByName("compileOnly") != null) {
+// All project-level fixes run after every project is configured (avoids the
+// "already evaluated" error that afterEvaluate triggers when evaluationDependsOn
+// has already forced a project to evaluate).
+gradle.projectsEvaluated {
+    // Fix 1: Provide unity-classes.jar as compileOnly to every subproject so that
+    // flutter_unity_widget can resolve UnityPlayer / IUnityPlayerLifecycleEvents.
+    rootProject.subprojects.forEach { proj ->
+        proj.configurations.findByName("compileOnly")?.let { config ->
             listOf("unity-classes.jar", "classes.jar").forEach { jarName ->
                 val jar = rootProject.file("unityLibrary/unityLibrary/libs/$jarName")
                 if (jar.exists()) {
-                    dependencies.add("compileOnly", files(jar))
+                    config.dependencies.add(proj.dependencies.create(proj.files(jar)))
                 }
             }
         }
     }
-}
 
-// Move conflicting flat-file Mapbox AARs bundled by Unity from `implementation` to
-// `compileOnly` inside the unityLibrary project.  This keeps them on the compile
-// classpath so Unity code compiles, but stops them from being packaged into the APK
-// where they would duplicate the newer version pulled in by mapbox_maps_flutter.
-gradle.projectsEvaluated {
+    // Fix 2: Move conflicting flat-file Mapbox AARs bundled by Unity from
+    // `implementation` to `compileOnly` inside the unityLibrary project so they
+    // are not packaged into the APK (mapbox_maps_flutter provides a newer version).
     rootProject.findProject(":unityLibrary")?.let { unityLib ->
         val implConfig = unityLib.configurations.findByName("implementation") ?: return@let
         val compileOnly = unityLib.configurations.findByName("compileOnly")
-        val conflictingPrefixes = listOf(
-            "common-ndk27",
-            "common-0.",
-            "loader-",
-            "logger-",
-        )
+        val conflictingPrefixes = listOf("common-ndk27", "common-0.", "loader-", "logger-")
         val toMove = implConfig.dependencies
             .filterIsInstance<org.gradle.api.artifacts.ExternalModuleDependency>()
             .filter { dep -> conflictingPrefixes.any { dep.name.startsWith(it) } }
