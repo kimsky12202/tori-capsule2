@@ -17,6 +17,7 @@ class _UnityMapScreenState extends State<UnityMapScreen>
   UnityWidgetController? _unityController;
   StreamSubscription<geo.Position>? _posSub;
   bool _unityReady = false;
+  bool _loadTimeout = false;
 
   @override
   bool get wantKeepAlive => true;
@@ -25,6 +26,12 @@ class _UnityMapScreenState extends State<UnityMapScreen>
   void initState() {
     super.initState();
     _requestLocationPermission();
+    // 15초 후에도 안 뜨면 타임아웃 표시
+    Future.delayed(const Duration(seconds: 15), () {
+      if (mounted && !_unityReady) {
+        setState(() => _loadTimeout = true);
+      }
+    });
   }
 
   @override
@@ -98,13 +105,14 @@ class _UnityMapScreenState extends State<UnityMapScreen>
             useAndroidViewSurface: true,
           ),
           if (!_unityReady)
-            const Center(
+            Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  CircularProgressIndicator(color: Color(0xFF7B5EA7)),
-                  SizedBox(height: 16),
-                  Text('지도 로딩 중...'),
+                  if (!_loadTimeout)
+                    const CircularProgressIndicator(color: Color(0xFF7B5EA7)),
+                  const SizedBox(height: 16),
+                  Text(_loadTimeout ? 'Unity 로드 실패\n앱을 재시작해주세요' : '지도 로딩 중...'),
                 ],
               ),
             ),
