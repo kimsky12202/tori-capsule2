@@ -49,6 +49,10 @@ flutter {
 dependencies {
     val unityLibraryDir = file("../unityLibrary")
     if (unityLibraryDir.exists()) {
-        implementation(project(":unityLibrary"))
+        implementation(project(":unityLibrary")) {
+            exclude(group = "com.mapbox.common")
+            exclude(group = "com.mapbox.mapboxsdk")
+            exclude(group = "com.mapbox.base")
+        }
     }
 }

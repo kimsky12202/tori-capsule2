@@ -19,6 +19,17 @@ subprojects {
     project.evaluationDependsOn(":app")
 }
 
+subprojects {
+    afterEvaluate {
+        if (name == "flutter_unity_widget") {
+            val hasUnityLib = rootProject.subprojects.any { it.name == "unityLibrary" }
+            if (hasUnityLib) {
+                dependencies.add("compileOnly", project(":unityLibrary"))
+            }
+        }
+    }
+}
+
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
