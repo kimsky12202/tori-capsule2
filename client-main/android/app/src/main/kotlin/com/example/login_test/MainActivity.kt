@@ -1,5 +1,5 @@
 package com.example.login_test
 
-import com.xraph.plugin.flutter_unity_widget.FlutterUnityActivity
+import io.flutter.embedding.android.FlutterActivity
 
-class MainActivity : FlutterUnityActivity()
+class MainActivity : FlutterActivity()
