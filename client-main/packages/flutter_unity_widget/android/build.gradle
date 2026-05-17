@@ -65,7 +65,7 @@ def annotation_version = '1.3.0'
 
 dependencies {
     implementation project(':unityLibrary')
-    implementation(name: 'unity-classes', ext:'jar')
+    compileOnly(name: 'unity-classes', ext:'jar')
 
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
     implementation "androidx.lifecycle:lifecycle-common:$lifecycle_version"
