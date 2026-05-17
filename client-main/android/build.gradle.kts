@@ -18,6 +18,16 @@ subprojects {
 subprojects {
     project.evaluationDependsOn(":app")
 }
+subprojects {
+    // Override unityLibrary's ndkVersion to match Flutter's installed NDK (27.0.12077973).
+    // Unity IL2CPP exports with ndkVersion=23.x which is not installed; this prevents the error.
+    afterEvaluate {
+        if (name == "unityLibrary") {
+            (extensions.findByName("android") as? com.android.build.gradle.LibraryExtension)
+                ?.ndkVersion = "27.0.12077973"
+        }
+    }
+}
 
 // All project-level fixes run after every project is configured (avoids the
 // "already evaluated" error that afterEvaluate triggers when evaluationDependsOn
