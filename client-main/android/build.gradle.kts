@@ -11,8 +11,12 @@ allprojects {
 val unityGradleFile = file("unityLibrary/unityLibrary/build.gradle")
 if (unityGradleFile.exists()) {
     var text = unityGradleFile.readText()
-    text = text.replace(Regex("ndkVersion '.*?'"), "ndkVersion '27.0.12077973'")
-    text = text.replace(Regex("[ \\t]*ndkPath '.*?'\\r?\\n?"), "")
+    // Handle both single and double quotes around the version string
+    text = text.replace(Regex("""ndkVersion ['"][^'"]*['"]"""), "ndkVersion '27.0.12077973'")
+    // Strip ndkPath line entirely regardless of quote style or path content
+    text = text.lines().filter { line ->
+        !line.trim().startsWith("ndkPath")
+    }.joinToString("\n")
     unityGradleFile.writeText(text)
 }
 
