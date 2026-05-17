@@ -23,6 +23,18 @@ subprojects {
 // "already evaluated" error that afterEvaluate triggers when evaluationDependsOn
 // has already forced a project to evaluate).
 gradle.projectsEvaluated {
+    // Fix 0: Force armeabi-v7a only – overrides any arm64-v8a that Flutter's Gradle
+    // plugin may have added after our app/build.gradle.kts ran.
+    rootProject.findProject(":app")?.let { appProj ->
+        @Suppress("UNCHECKED_CAST")
+        val android = appProj.extensions.findByName("android")
+            as? com.android.build.gradle.AppExtension ?: return@let
+        android.defaultConfig.ndk.abiFilters.apply {
+            clear()
+            add("armeabi-v7a")
+        }
+    }
+
     // Fix 1: Provide unity-classes.jar as compileOnly to every subproject so that
     // flutter_unity_widget can resolve UnityPlayer / IUnityPlayerLifecycleEvents.
     rootProject.subprojects.forEach { proj ->

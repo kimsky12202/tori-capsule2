@@ -29,7 +29,8 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         ndk {
-            abiFilters += listOf("armeabi-v7a")
+            abiFilters.clear()
+            abiFilters.add("armeabi-v7a")
         }
     }
 
