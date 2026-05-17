@@ -5,6 +5,17 @@ allprojects {
     }
 }
 
+// Patch unityLibrary/build.gradle BEFORE Gradle reads it.
+// Unity IL2CPP exports embed ndkVersion=23.x and ndkPath=Unity's bundled NDK.
+// We rewrite these to the installed NDK 27 so BuildIl2CppTask can find it.
+val unityGradleFile = file("unityLibrary/unityLibrary/build.gradle")
+if (unityGradleFile.exists()) {
+    var text = unityGradleFile.readText()
+    text = text.replace(Regex("ndkVersion '.*?'"), "ndkVersion '27.0.12077973'")
+    text = text.replace(Regex("[ \\t]*ndkPath '.*?'\\r?\\n?"), "")
+    unityGradleFile.writeText(text)
+}
+
 val newBuildDir: Directory =
     rootProject.layout.buildDirectory
         .dir("../../build")
@@ -29,7 +40,6 @@ gradle.projectsEvaluated {
         (unityLib.extensions.findByName("android") as? com.android.build.gradle.LibraryExtension)
             ?.let { android ->
                 android.ndkVersion = "27.0.12077973"
-                android.ndkPath = "C:\\Users\\Kimhajin\\AppData\\Local\\Android\\sdk\\ndk\\27.0.12077973"
             }
     }
 
